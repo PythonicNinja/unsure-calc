@@ -114,10 +114,7 @@
 
             const params = new URLSearchParams(window.location.search);
             const expr = decodeURIComponent(params.get('expr'));
-            console.log({
-                expr
-            })
-            if (expr) {
+            if (expr !== "null") {
                 expressionInput.value = expr;
             }
 
@@ -654,7 +651,7 @@
             });
 
             // --- Initial example calculation ---
-            if (expressionInput.value === "") {
+            if (!expressionInput.value) {
                 expressionInput.value = "100~200 * 2~4 / 2~4";
             }
             calculate();
