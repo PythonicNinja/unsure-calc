@@ -112,6 +112,15 @@
             const HISTOGRAM_MAX_WIDTH = 40;
             const BAR_CHAR = "█";
 
+            const params = new URLSearchParams(window.location.search);
+            const expr = decodeURIComponent(params.get('expr'));
+            console.log({
+                expr
+            })
+            if (expr) {
+                expressionInput.value = expr;
+            }
+
             // --- Gaussian Random Number Generator (Box-Muller Transform) ---
             let spareRandom = null;
             function gaussianRandom(mean, stdDev) {
@@ -567,6 +576,13 @@
                 resultContainer.classList.remove("border-red-600");
                 resultSummaryDisplay.classList.remove("text-red-600");
 
+                if (expression) {
+                    // set query params
+                    const params = new URLSearchParams();
+                    params.set('expr', encodeURIComponent(expression));
+                    window.history.pushState(null, '', `?${params.toString()}`);
+                }
+
                 setTimeout(() => {
                     try {
                         if (!expression.trim()) {
@@ -638,7 +654,9 @@
             });
 
             // --- Initial example calculation ---
-            expressionInput.value = "100~200 * 2~4 / 2~4";
+            if (expressionInput.value === "") {
+                expressionInput.value = "100~200 * 2~4 / 2~4";
+            }
             calculate();
         </script>
     </body>
