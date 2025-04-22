@@ -152,7 +152,7 @@
             // --- Tokenizer (Unchanged) ---
             function tokenize(s) {
                 const tokens = [];
-                const NUMBER_REGEX = /^[0-9]+(\.[0-9]+)?/;
+                const NUMBER_REGEX = /^-?[0-9]+(\.[0-9]+)?/;
                 const OPERATOR_REGEX = /^[+\-*^/~()]/;
                 const WHITESPACE_REGEX = /^\s+/;
                 let remaining = s.trim();
@@ -184,6 +184,8 @@
             }
 
             function shuntingYard(tokens) {
+                // Track previous token to distinguish unary/binary minus
+                let prevToken = null;
                 const outputQueue = [];
                 const operatorStack = [];
                 const precedence = { "+": 1, "-": 1, "*": 2, "/": 2, "^": 3, "~": 4 };
@@ -196,10 +198,25 @@
                     "~": "R",
                 };
                 for (const token of tokens) {
+                // Detect unary minus: at start, after (, or after another operator
+                if (token === '-') {
+                    if (
+                        prevToken == null ||
+                        prevToken === '(' ||
+                        (typeof prevToken !== 'number' && prevToken !== ')')
+                    ) {
+                        // Treat as unary minus
+                        operatorStack.push('NEG');
+                        prevToken = token;
+                        continue;
+                    }
+                }
                     if (typeof token === "number") {
                         outputQueue.push(token);
+                    prevToken = token;
                     } else if (token === "(") {
                         operatorStack.push(token);
+                    prevToken = token;
                     } else if (token === ")") {
                         while (
                             operatorStack.length > 0 &&
@@ -228,6 +245,7 @@
                             outputQueue.push(operatorStack.pop());
                         }
                         operatorStack.push(op1);
+                    prevToken = token;
                     } else {
                         throw new Error(`Unknown token: ${token}`);
                     }
@@ -240,10 +258,12 @@
                         );
                     outputQueue.push(op);
                 }
-                return outputQueue;
+                return outputQueue; // 'NEG' will be in outputQueue as needed
             }
 
             function evalRpn(rpnQueue) {
+                // Support unary minus (NEG)
+
                 const stack = [];
 
                 const createNumberValue = (num) => ({
@@ -291,6 +311,22 @@
                 };
 
                 for (const token of rpnQueue) {
+                    if (token === 'NEG') {
+                        if (stack.length < 1)
+                            throw new Error("Not enough operands for unary minus");
+                        const a = stack.pop();
+                        // Negate all fields
+                        const nmin = Math.min(-a.max, -a.min);
+                        const nmax = Math.max(-a.max, -a.min);
+                        stack.push({
+                            mean: -a.mean,
+                            min: nmin,
+                            max: nmax,
+                            samples: a.samples ? a.samples.map(x => -x) : null,
+                        });
+                        continue;
+                    }
+
                     if (typeof token === "number") {
                         stack.push(createNumberValue(token));
                     } else if (token === "~") {
