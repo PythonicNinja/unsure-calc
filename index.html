@@ -156,7 +156,7 @@
             <div class="mt-6">
                 <div
                     id="result-container"
-                    class="bg-gray-50 p-4 rounded-md text-sm leading-relaxed tracking-wider border border-gray-200 min-h-[4em] overflow-x-auto"
+                    class="bg-gray-50 p-4 rounded-md text-sm leading-relaxed tracking-wider border border-gray-200 min-h-[4em] overflow-x-auto hidden"
                 >
                     <div id="result-summary"></div>
                     <div id="result-histogram"></div>
@@ -700,6 +700,7 @@
                 const expression = expressionInput.value;
                 resultSummaryDisplay.innerHTML = "<div>Calculating...</div>"; // Use innerHTML for multiple lines
                 resultHistogramDisplay.innerHTML = "";
+                resultContainer.classList.add("hidden");
                 resultContainer.classList.remove("border-red-600");
                 resultSummaryDisplay.classList.remove("text-red-600");
 
@@ -771,6 +772,7 @@
                         resultContainer.classList.add("border-red-600");
                         resultHistogramDisplay.innerHTML = ""; // Clear histogram on error
                     }
+                    resultContainer.classList.remove("hidden");
                 }, 10);
             }
 
