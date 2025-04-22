@@ -5,24 +5,91 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Unsure Calculator</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap" rel="stylesheet">
         <style>
             body {
-                font-family: "Courier New", Courier, monospace;
-                letter-spacing: 0.025em;
+                font-family: 'Manrope', 'Inter', 'system-ui', 'Segoe UI', Arial, sans-serif;
+                background: linear-gradient(135deg, #f7e7ce 0%, #fff6f0 100%);
+                letter-spacing: 0.01em;
             }
-            button:focus {
-                outline: 2px solid transparent;
-                outline-offset: 2px;
-                box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.5);
+            .ft-card {
+                background: linear-gradient(135deg, #fff6f0 60%, #f7e7ce 100%);
+                border: 2px solid #bfa36f;
+                border-radius: 18px;
+                box-shadow: 0 6px 32px 0 rgba(80, 60, 30, 0.10), 0 1.5px 6px 0 rgba(191, 163, 111, 0.12);
+                padding: 3.2rem 2.3rem 2.5rem 2.3rem;
+                max-width: 540px;
+                margin: 0 auto;
             }
-            input,
+            h1 {
+                font-family: 'DM Serif Display', serif;
+                font-size: 2.7rem;
+                font-weight: 400;
+                color: #bfa36f;
+                margin-bottom: 2.3rem;
+                text-align: center;
+                letter-spacing: 0.01em;
+                text-shadow: 0 2px 8px #fff6f0, 0 1px 0 #bfa36f;
+            }
+            label {
+                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
+                font-size: 1.08rem;
+                color: #bfa36f;
+                font-weight: 700;
+                margin-bottom: 0.7rem;
+                display: block;
+                letter-spacing: 0.01em;
+            }
+            input[type="text"] {
+                width: 100%;
+                padding: 1.15rem 1.5rem;
+                border: 2px solid #bfa36f;
+                border-radius: 10px;
+                background: #fff6f0;
+                font-size: 1.18rem;
+                color: #3a2c13;
+                transition: border 0.22s, box-shadow 0.22s;
+                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
+                box-sizing: border-box;
+                box-shadow: 0 1.5px 6px 0 rgba(191, 163, 111, 0.08);
+            }
+            input[type="text"]:focus {
+                outline: none;
+                border-color: #e0b973;
+                box-shadow: 0 0 0 2px #f2e6d9, 0 1.5px 6px 0 #e0b97333;
+            }
+            button {
+                width: 100%;
+                padding: 1.15rem 0;
+                background: linear-gradient(90deg, #bfa36f 70%, #e0b973 100%);
+                color: #fff6f0;
+                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
+                font-weight: 700;
+                font-size: 1.22rem;
+                border: none;
+                border-radius: 10px;
+                cursor: pointer;
+                transition: background 0.18s, box-shadow 0.18s, color 0.18s;
+                box-shadow: 0 2px 16px 0 #bfa36f22, 0 1.5px 6px 0 #bfa36f33;
+                letter-spacing: 0.01em;
+                margin-bottom: 0.3rem;
+            }
+            button:hover, button:focus {
+                background: linear-gradient(90deg, #e0b973 0%, #bfa36f 100%);
+                color: #3a2c13;
+                box-shadow: 0 4px 24px 0 #bfa36f33, 0 2px 8px 0 #e0b97344;
+            }
             #result-container {
-                font-family: "Courier New", Courier, monospace;
-                line-height: 1.6;
-            }
-            #result-container {
-                text-wrap: nowrap;
-                overflow-x: scroll;
+                font-family: 'JetBrains Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+                background: linear-gradient(135deg, #fff6f0 80%, #f7e7ce 100%);
+                border: 2px solid #bfa36f;
+                border-radius: 10px;
+                padding: 1.5rem 1.2rem 1.2rem 1.2rem;
+                margin-top: 2.1rem;
+                min-height: 4em;
+                overflow-x: auto;
+                color: #3a2c13;
+                box-shadow: 0 2px 16px 0 #bfa36f1a, 0 1.5px 6px 0 #bfa36f22;
             }
             .histogram-line {
                 display: flex;
@@ -33,6 +100,7 @@
                 text-align: right;
                 padding-right: 0.5em;
                 flex-shrink: 0;
+                color: #6D7175;
             }
             .histogram-separator {
                 padding-right: 0.5em;
@@ -42,11 +110,19 @@
                 flex-grow: 1;
                 white-space: nowrap;
                 overflow: hidden;
-                color: #4f46e5;
+                color: #bfa36f;
+                border-radius: 3px;
             }
-            /* Style for summary lines */
             #result-summary div {
-                margin-bottom: 0.3em;
+                font-size: 1.11rem;
+                color: #3a2c13;
+                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
+            }
+            .text-xs {
+                color: #bfa36f;
+                text-align: center;
+                font-size: 0.97rem;
+                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
             }
         </style>
     </head>
@@ -55,36 +131,29 @@
     >
         <div class="bg-white p-4 rounded-lg shadow-md w-full max-w-4xl">
             <h1
-                class="text-3xl font-bold mb-6 text-center tracking-wide text-gray-700"
+                class="text-3xl font-bold mb-6 text-center tracking-wide text-gray-700 cursor-pointer"
+                onclick="reset()"
             >
                 Unsure Calculator
             </h1>
 
-            <div class="mb-4">
-                <label
-                    for="expression"
-                    class="block text-sm font-medium text-gray-600 mb-1"
-                    >Enter Expression:</label
-                >
+            <div class="mb-6 flex items-center gap-3">
                 <input
                     type="text"
                     id="expression"
                     placeholder="e.g., 100~200 * (5 ~ 7 + 1)"
-                    class="block w-full px-4 py-3 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 text-lg leading-relaxed tracking-wider"
+                    class="flex-grow border-2 border-[#bfa36f] rounded-l-xl bg-[#fff6f0] text-lg leading-relaxed tracking-wider font-medium focus:outline-none focus:border-[#e0b973] focus:ring-2 focus:ring-[#e0b973] transition duration-150 ease-in-out shadow-sm"
                 />
+                <button
+                    id="calculateBtn"
+                    class="px-4 py-4 bg-[#e0b973] hover:bg-[#bfa36f] text-[#3a2c13] font-bold text-xl rounded-r-xl focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#e0b973] transition duration-150 ease-in-out shadow-md"
+                    style="max-width: 50px"
+                >
+                    =
+                </button>
             </div>
 
-            <button
-                id="calculateBtn"
-                class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 ease-in-out text-lg tracking-wider"
-            >
-                Calculate
-            </button>
-
             <div class="mt-6">
-                <label class="block text-sm font-medium text-gray-600 mb-1"
-                    >Result:</label
-                >
                 <div
                     id="result-container"
                     class="bg-gray-50 p-4 rounded-md text-sm leading-relaxed tracking-wider border border-gray-200 min-h-[4em] overflow-x-auto"
@@ -94,7 +163,9 @@
                 </div>
             </div>
             <p class="text-xs text-gray-500 mt-4 text-center">
-                Use '~' for ranges. Displays Exact & Simulated results.
+                Use '~' for ranges. 
+                <br>
+                EURPLN range: 4.1~4.3
             </p>
         </div>
 
@@ -116,6 +187,12 @@
             const expr = decodeURIComponent(params.get('expr'));
             if (expr !== "null") {
                 expressionInput.value = expr;
+            }
+
+            function reset() {
+                expressionInput.value = "";
+                calculate();
+                expressionInput.focus();
             }
 
             // --- Gaussian Random Number Generator (Box-Muller Transform) ---
@@ -671,7 +748,7 @@
                                 summaryHtml += `<div><span class="text-red-600">Simulated Result Contains NaN/Infinity</span></div>`;
                                 hasError = true;
                             } else {
-                                summaryHtml += `<div class="mt-2">Simulated Range (5%-95%): ${formatNumber(quantiles.p05)} ~ ${formatNumber(quantiles.p95)}</div>`;
+                                summaryHtml += `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)} ~ ${formatNumber(quantiles.p95)}</div>`;
                             }
                             // Generate and display histogram
                             const histogramLines = generateTextHistogram(
@@ -705,7 +782,7 @@
 
             // --- Initial example calculation ---
             if (!expressionInput.value) {
-                expressionInput.value = "100~200 * 2~4 / 2~4";
+                expressionInput.value = "7~10 * 17~23";
             }
             calculate();
         </script>
