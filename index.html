@@ -124,12 +124,66 @@
                 font-size: 0.97rem;
                 font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
             }
+            /* Responsive right panel for history */
+            #history-panel {
+                width: 320px;
+                max-width: 85vw;
+                background: #fff6f0;
+                border-left: 2px solid #bfa36f;
+                box-shadow: -2px 0 16px 0 #bfa36f22;
+                padding: 1.5rem 1.2rem 1.2rem 1.2rem;
+                overflow-y: auto;
+                position: fixed;
+                right: 0;
+                top: 0;
+                height: 100vh;
+                z-index: 60;
+                transition: transform 0.3s;
+            }
+            #history-panel.closed {
+                transform: translateX(100%);
+            }
+            #history-panel.open {
+                transform: translateX(0);
+            }
+            @media (max-width: 1023px) {
+                #history-panel {
+                    width: 100vw;
+                    max-width: 100vw;
+                    border-left: none;
+                    border-top: 2px solid #bfa36f;
+                    top: auto;
+                    bottom: 0;
+                    height: 55vh;
+                    position: fixed;
+                    right: 0;
+                    left: 0;
+                    box-shadow: 0 -2px 16px 0 #bfa36f22;
+                }
+            }
+            .history-toggle-btn {
+                position: fixed;
+                right: 16px;
+                top: 16px;
+                z-index: 60;
+                background: #bfa36f;
+                color: #fff6f0;
+                border: none;
+                border-radius: 50%;
+                width: 44px;
+                height: 44px;
+                font-size: 1.5rem;
+                box-shadow: 0 2px 8px #bfa36f33;
+            }
         </style>
     </head>
     <body
-        class="bg-gray-100 text-gray-800 min-h-screen flex items-center justify-center p-4"
+        class="bg-gray-100 text-gray-800 min-h-screen flex items-center justify-center p-4 relative"
     >
-        <div class="bg-white p-4 rounded-lg shadow-md w-full max-w-4xl">
+        <!-- Toggle button for mobile -->
+        <button class="history-toggle-btn" id="historyToggleBtn" title="Show/Hide history">⏳</button>
+
+        <div class="bg-white p-4 rounded-lg shadow-md w-full max-w-4xl relative z-10">
             <h1
                 class="text-3xl font-bold mb-6 text-center tracking-wide text-gray-700 cursor-pointer"
                 onclick="reset()"
@@ -169,25 +223,111 @@
             </p>
         </div>
 
-        <script>
-            const expressionInput = document.getElementById("expression");
-            const calculateBtn = document.getElementById("calculateBtn");
-            const resultSummaryDisplay =
-                document.getElementById("result-summary");
-            const resultHistogramDisplay =
-                document.getElementById("result-histogram");
-            const resultContainer = document.getElementById("result-container");
+        <!-- Calculation History Panel -->
+        <aside id="history-panel" class="closed">
+            <div class="flex items-center justify-between mb-4">
+                <span class="font-bold text-lg text-[#bfa36f]">Past Calculations</span>
+                <button id="closeHistoryBtn" class="text-[#bfa36f] text-2xl font-bold px-2 py-1 rounded hover:bg-[#f7e7ce]" title="Close">&times;</button>
+            </div>
+            <div id="history-list" class="space-y-3"></div>
+        </aside>
 
+        <script defer="defer">
             const NUM_SAMPLES = 10000;
             const HISTOGRAM_BINS = 20;
             const HISTOGRAM_MAX_WIDTH = 40;
             const BAR_CHAR = "█";
 
-            const params = new URLSearchParams(window.location.search);
-            const expr = decodeURIComponent(params.get('expr'));
-            if (expr !== "null") {
-                expressionInput.value = expr;
+            const expressionInput = document.getElementById("expression");
+            const calculateBtn = document.getElementById("calculateBtn");
+            const resultSummaryDisplay = document.getElementById("result-summary");
+            const resultHistogramDisplay = document.getElementById("result-histogram");
+            const resultContainer = document.getElementById("result-container");
+            // History panel elements
+            const historyPanel = document.getElementById("history-panel");
+            const historyList = document.getElementById("history-list");
+            const historyToggleBtn = document.getElementById("historyToggleBtn");
+            const closeHistoryBtn = document.getElementById("closeHistoryBtn");
+
+            // --- Responsive History Panel ---
+            function openHistoryPanel() {
+                historyPanel.classList.remove('closed');
+                historyPanel.classList.add('open');
             }
+            function closeHistoryPanel() {
+                historyPanel.classList.remove('open');
+                historyPanel.classList.add('closed');
+            }
+            historyToggleBtn.addEventListener('click', () => {
+                if (historyPanel.classList.contains('open')) closeHistoryPanel();
+                else openHistoryPanel();
+            });
+            closeHistoryBtn.addEventListener('click', closeHistoryPanel);
+            // On desktop, always show
+            function updatePanelVisibility() {
+                if (window.innerWidth >= 1024) {
+                    historyPanel.classList.remove('closed');
+                    historyPanel.classList.add('open');
+                } else {
+                    historyPanel.classList.add('closed');
+                    historyPanel.classList.remove('open');
+                }
+            }
+            window.addEventListener('resize', updatePanelVisibility);
+            document.addEventListener('DOMContentLoaded', updatePanelVisibility);
+
+            // --- Calculation History Logic ---
+            function getHistory() {
+                try {
+                    return JSON.parse(localStorage.getItem('unsureCalcHistory')) || [];
+                } catch { return []; }
+            }
+            function saveHistory(history) {
+                localStorage.setItem('unsureCalcHistory', JSON.stringify(history));
+            }
+            function addToHistory(expression) {
+                if (!expression.trim()) return;
+                let history = getHistory();
+                // Remove duplicates (keep latest)
+                history = history.filter(item => item.expression !== expression);
+                history.unshift({ expression, date: new Date().toISOString() });
+                if (history.length > 20) history = history.slice(0, 20);
+                saveHistory(history);
+                renderHistory();
+            }
+            function renderHistory() {
+                const history = getHistory();
+                if (!history.length) {
+                    historyList.innerHTML = '<div class="text-gray-400 text-sm">No past calculations yet.</div>';
+                    return;
+                }
+                historyList.innerHTML = '';
+                history.forEach(({expression, date}, idx) => {
+                    const dateObj = new Date(date);
+                    const dateStr = dateObj.toLocaleString([], {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+                    const item = document.createElement('div');
+                    item.className = 'flex items-center justify-between gap-2 bg-[#fff6f0] border rounded px-3 py-2 shadow-sm';
+                    item.innerHTML = `
+                        <div class="flex-1 min-w-0">
+                            <div class="truncate font-mono text-[#bfa36f] text-base" title="${expression}">${expression}</div>
+                            <div class="text-xs text-gray-400">${dateStr}</div>
+                        </div>
+                        <button class="ml-2 px-3 py-1 bg-[#e0b973] hover:bg-[#bfa36f] text-[#3a2c13] rounded font-bold text-sm history-redo-btn" data-expression="${encodeURIComponent(expression)}">Do again</button>
+                    `;
+                    historyList.appendChild(item);
+                });
+                // Attach listeners
+                document.querySelectorAll('.history-redo-btn').forEach(btn => {
+                    btn.onclick = (e) => {
+                        const expr = decodeURIComponent(btn.getAttribute('data-expression'));
+                        expressionInput.value = expr;
+                        closeHistoryPanel();
+                        setTimeout(() => calculate(), 100);
+                    };
+                });
+            }
+
+            // --- Patch calculate() to save history ---
 
             function reset() {
                 expressionInput.value = "";
@@ -777,10 +917,19 @@
             }
 
             // --- Event Listeners ---
-            calculateBtn.addEventListener("click", calculate);
-            expressionInput.addEventListener("keypress", (event) => {
-                if (event.key === "Enter") calculate();
+            calculateBtn.addEventListener("click", () => {
+                calculate();
+                addToHistory(expressionInput.value);
             });
+            expressionInput.addEventListener("keypress", (event) => {
+                if (event.key === "Enter") {
+                    calculate();
+                    addToHistory(expressionInput.value);
+                }
+            });
+
+            // Initial render of history
+            renderHistory();
 
             // --- Initial example calculation ---
             if (!expressionInput.value) {
