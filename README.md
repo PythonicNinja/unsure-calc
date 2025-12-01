@@ -2,6 +2,8 @@
 
 Lightweight probabilistic calculator that lets you type ranges (with `~`) and arithmetic to see exact bounds plus simulated outcomes and a text histogram.
 
+Deployed at: https://calc.pythonic.ninja
+
 ## Getting started
 1. Install prerequisites: `node` (v18+ for `node:test`) and `python3` for the simple dev server.
 2. Run `make dev` then open `http://localhost:8000` (override port with `DEV_PORT=9000 make dev`).
