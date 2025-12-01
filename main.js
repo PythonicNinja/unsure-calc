@@ -1,0 +1,548 @@
+// Core calculator logic split out for reuse in browser and tests
+
+const NUM_SAMPLES = 10000;
+const HISTOGRAM_BINS = 20;
+const HISTOGRAM_MAX_WIDTH = 40;
+const BAR_CHAR = "█";
+
+let spareRandom = null;
+
+function gaussianRandom(mean, stdDev) {
+    let u, v, s;
+    if (spareRandom !== null) {
+        const temp = spareRandom;
+        spareRandom = null;
+        return mean + stdDev * temp;
+    }
+    do {
+        u = Math.random() * 2 - 1;
+        v = Math.random() * 2 - 1;
+        s = u * u + v * v;
+    } while (s >= 1 || s === 0);
+    const mul = Math.sqrt((-2.0 * Math.log(s)) / s);
+    spareRandom = v * mul;
+    return mean + stdDev * (u * mul);
+}
+
+function generateSamples(mean, stdDev) {
+    if (stdDev === 0) {
+        return Array(NUM_SAMPLES).fill(mean);
+    }
+    const samples = [];
+    for (let i = 0; i < NUM_SAMPLES; i++) {
+        samples.push(gaussianRandom(mean, stdDev));
+    }
+    return samples;
+}
+
+// --- Tokenizer ---
+function tokenize(s) {
+    const tokens = [];
+    const NUMBER_REGEX = /^[0-9]+(\.[0-9]+)?/;
+    const OPERATOR_REGEX = /^[+\-*^/~()]/;
+    const WHITESPACE_REGEX = /^\s+/;
+    let remaining = s.trim();
+    const originalString = s;
+    while (remaining.length > 0) {
+        let match;
+        match = remaining.match(WHITESPACE_REGEX);
+        if (match) {
+            remaining = remaining.substring(match[0].length);
+            continue;
+        }
+        match = remaining.match(NUMBER_REGEX);
+        if (match) {
+            tokens.push(parseFloat(match[0]));
+            remaining = remaining.substring(match[0].length);
+            continue;
+        }
+        match = remaining.match(OPERATOR_REGEX);
+        if (match) {
+            tokens.push(match[0]);
+            remaining = remaining.substring(match[0].length);
+            continue;
+        }
+        throw new Error(
+            `Syntax Error: Cannot parse near '${remaining.substring(0, 10)}...' in expression '${originalString}'`,
+        );
+    }
+    return tokens;
+}
+
+function shuntingYard(tokens) {
+    let prevToken = null;
+    const outputQueue = [];
+    const operatorStack = [];
+    const precedence = { "+": 1, "-": 1, "*": 2, "/": 2, "^": 3, "~": 4, "NEG": 5 };
+    const associativity = {
+        "+": "L",
+        "-": "L",
+        "*": "L",
+        "/": "L",
+        "^": "L",
+        "~": "R",
+        "NEG": "R",
+    };
+    for (const token of tokens) {
+        if (token === '-') {
+            if (
+                prevToken == null ||
+                prevToken === '(' ||
+                (typeof prevToken !== 'number' && prevToken !== ')')
+            ) {
+                operatorStack.push('NEG');
+                prevToken = token;
+                continue;
+            }
+        }
+        if (typeof token === "number") {
+            outputQueue.push(token);
+            prevToken = token;
+        } else if (token === "(") {
+            operatorStack.push(token);
+            prevToken = token;
+        } else if (token === ")") {
+            while (
+                operatorStack.length > 0 &&
+                operatorStack[operatorStack.length - 1] !== "("
+            ) {
+                outputQueue.push(operatorStack.pop());
+            }
+            if (operatorStack.length === 0)
+                throw new Error("Mismatched parentheses: Found ')' without matching '('");
+            operatorStack.pop();
+        } else if (precedence[token]) {
+            const op1 = token;
+            while (
+                operatorStack.length > 0 &&
+                operatorStack[operatorStack.length - 1] !== "(" &&
+                (precedence[operatorStack[operatorStack.length - 1]] > precedence[op1] ||
+                    (precedence[operatorStack[operatorStack.length - 1]] === precedence[op1] &&
+                        associativity[op1] === "L"))
+            ) {
+                outputQueue.push(operatorStack.pop());
+            }
+            operatorStack.push(op1);
+            prevToken = token;
+        } else {
+            throw new Error(`Unknown token: ${token}`);
+        }
+    }
+    while (operatorStack.length > 0) {
+        const op = operatorStack.pop();
+        if (op === "(") throw new Error("Mismatched parentheses: Found '(' without matching ')'");
+        outputQueue.push(op);
+    }
+    return outputQueue;
+}
+
+function evalRpn(rpnQueue) {
+    const stack = [];
+
+    const createNumberValue = (num) => ({
+        mean: num,
+        min: num,
+        max: num,
+        samples: null,
+    });
+
+    const operateSamples = (samplesA, samplesB, operation) => {
+        const aIsArray = Array.isArray(samplesA);
+        const bIsArray = Array.isArray(samplesB);
+        // If both inputs are exact numbers (not arrays), we keep exact arithmetic only
+        if (!aIsArray && !bIsArray) return null;
+
+        const N = NUM_SAMPLES;
+        const resultSamples = Array(N);
+
+        for (let i = 0; i < N; i++) {
+            const a = aIsArray ? samplesA[i] : samplesA;
+            const b = bIsArray ? samplesB[i] : samplesB;
+
+            switch (operation) {
+                case "+":
+                    resultSamples[i] = a + b;
+                    break;
+                case "-":
+                    resultSamples[i] = a - b;
+                    break;
+                case "*":
+                    resultSamples[i] = a * b;
+                    break;
+                case "/":
+                    resultSamples[i] = b === 0 ? NaN : a / b;
+                    break;
+                case "^":
+                    resultSamples[i] = Math.pow(a, b);
+                    break;
+                default:
+                    throw new Error(`Unknown sample operation: ${operation}`);
+            }
+        }
+        return resultSamples;
+    };
+
+    for (const token of rpnQueue) {
+        if (token === 'NEG') {
+            if (stack.length < 1) throw new Error("Not enough operands for unary minus");
+            const a = stack.pop();
+            const nmin = Math.min(-a.max, -a.min);
+            const nmax = Math.max(-a.max, -a.min);
+            stack.push({
+                mean: -a.mean,
+                min: nmin,
+                max: nmax,
+                samples: a.samples ? a.samples.map(x => -x) : null,
+            });
+            continue;
+        }
+
+        if (typeof token === "number") {
+            stack.push(createNumberValue(token));
+        } else if (token === "~") {
+            if (stack.length < 2) throw new Error("Not enough operands for '~'");
+            const uvB = stack.pop();
+            const uvA = stack.pop();
+
+            if (
+                uvA.samples !== null ||
+                uvB.samples !== null ||
+                typeof uvA.mean !== "number" ||
+                typeof uvB.mean !== "number"
+            ) {
+                throw new Error("Operands for '~' must be exact numbers (e.g., 100~200, not (5~10)~200)");
+            }
+            const a = uvA.mean;
+            const b = uvB.mean;
+
+            const mean = (a + b) / 2.0;
+            const stdDev = Math.abs(b - a) / 3.28970725;
+            const samples = generateSamples(mean, stdDev);
+
+            stack.push({
+                mean: mean,
+                min: Math.min(a, b),
+                max: Math.max(a, b),
+                samples: samples,
+            });
+        } else if ("+-*/^".includes(token)) {
+            if (stack.length < 2) throw new Error(`Not enough operands for '${token}'`);
+            const uvB = stack.pop();
+            const uvA = stack.pop();
+
+            let newMean, newMin, newMax;
+
+            switch (token) {
+                case "+":
+                    newMean = uvA.mean + uvB.mean;
+                    break;
+                case "-":
+                    newMean = uvA.mean - uvB.mean;
+                    break;
+                case "*":
+                    newMean = uvA.mean * uvB.mean;
+                    break;
+                case "/":
+                    newMean = uvB.mean === 0 ? NaN : uvA.mean / uvB.mean;
+                    break;
+                case "^":
+                    newMean = Math.pow(uvA.mean, uvB.mean);
+                    break;
+            }
+
+            const aMin = uvA.min, aMax = uvA.max;
+            const bMin = uvB.min, bMax = uvB.max;
+
+            switch (token) {
+                case "+":
+                    newMin = aMin + bMin;
+                    newMax = aMax + bMax;
+                    break;
+                case "-":
+                    newMin = aMin - bMax;
+                    newMax = aMax - bMin;
+                    break;
+                case "*":
+                    const prods = [aMin * bMin, aMin * bMax, aMax * bMin, aMax * bMax];
+                    newMin = Math.min(...prods);
+                    newMax = Math.max(...prods);
+                    break;
+                case "^":
+                    const powers = [aMin ** bMin, aMin ** bMax, aMax ** bMin, aMax ** bMax];
+                    newMin = Math.min(...powers);
+                    newMax = Math.max(...powers);
+                    break;
+                case "/":
+                    if (bMin <= 0 && bMax >= 0) {
+                        if (bMin === 0 && bMax === 0) {
+                            newMin = NaN;
+                            newMax = NaN;
+                            newMean = NaN;
+                        } else {
+                            if (aMin === 0 && aMax === 0) {
+                                newMin = 0;
+                                newMax = 0;
+                            } else {
+                                newMin = -Infinity;
+                                newMax = Infinity;
+                            }
+                        }
+                    } else {
+                        const quots = [aMin / bMin, aMin / bMax, aMax / bMin, aMax / bMax];
+                        newMin = Math.min(...quots);
+                        newMax = Math.max(...quots);
+                    }
+                    break;
+            }
+
+            const samplesA = uvA.samples ?? uvA.mean;
+            const samplesB = uvB.samples ?? uvB.mean;
+            const newSamples = operateSamples(samplesA, samplesB, token);
+
+            stack.push({
+                mean: newMean,
+                min: newMin,
+                max: newMax,
+                samples: newSamples,
+            });
+        } else {
+            throw new Error(`Internal Error: Unknown RPN token: ${token}`);
+        }
+    }
+
+    if (stack.length === 0) return null;
+    if (stack.length > 1) throw new Error("Invalid expression: Operands left over");
+    return stack[0];
+}
+
+function getQuantiles(samples) {
+    if (!Array.isArray(samples) || samples.length === 0) return { p05: NaN, p95: NaN };
+    const validSamples = samples.filter((n) => !isNaN(n) && isFinite(n));
+    if (validSamples.length === 0) return { p05: NaN, p95: NaN };
+    validSamples.sort((a, b) => a - b);
+    const len = validSamples.length;
+    const p05Index = Math.max(0, Math.floor(0.05 * len) - 1);
+    const p95Index = Math.min(len - 1, Math.ceil(0.95 * len) - 1);
+    return {
+        p05: validSamples[p05Index],
+        p95: validSamples[p95Index],
+    };
+}
+
+function formatNumber(num, padWidth = 0) {
+    let str;
+    const absNum = Math.abs(num);
+
+    if (isNaN(num)) str = "NaN";
+    else if (!isFinite(num)) str = num > 0 ? "Infinity" : "-Infinity";
+    else if (absNum === 0) str = "0";
+    else if (absNum < 1e-6 || absNum >= 1e9) str = num.toExponential(4);
+    else {
+        let decimals;
+        if (absNum >= 1000) decimals = 1;
+        else if (absNum >= 100) decimals = 2;
+        else if (absNum >= 10) decimals = 3;
+        else if (absNum >= 1) decimals = 4;
+        else if (absNum >= 0.01) decimals = 5;
+        else decimals = 6;
+
+        str = num.toFixed(decimals);
+        str = str.replace(/(\.[0-9]*?)0+$/, "$1");
+        str = str.replace(/\.$/, "");
+    }
+    return padWidth > 0 ? str.padStart(padWidth) : str;
+}
+
+function calculateSampleMean(samples) {
+    if (!Array.isArray(samples) || samples.length === 0) return NaN;
+    const validSamples = samples.filter((n) => !isNaN(n) && isFinite(n));
+    if (validSamples.length === 0) return NaN;
+    const sum = validSamples.reduce((acc, val) => acc + val, 0);
+    return sum / validSamples.length;
+}
+
+function generateTextHistogram(samples) {
+    const numBins = HISTOGRAM_BINS;
+    const maxBarWidth = HISTOGRAM_MAX_WIDTH;
+    const output = [];
+    if (!Array.isArray(samples) || samples.length === 0) return ["Histogram data not available."];
+
+    const validSamples = samples.filter((n) => !isNaN(n) && isFinite(n));
+    if (validSamples.length === 0) return ["Cannot generate histogram (no valid numeric samples)."];
+
+    const minVal = Math.min(...validSamples);
+    const maxVal = Math.max(...validSamples);
+    const sampleMean = calculateSampleMean(validSamples);
+
+    if (minVal === maxVal) {
+        const label = formatNumber(minVal, 7);
+        output.push(`<div class="histogram-line"><span class="histogram-label">${label}</span><span class="histogram-separator">|</span><span class="histogram-bar">${BAR_CHAR.repeat(maxBarWidth)} (All samples)</span></div>`);
+        return output;
+    }
+
+    const binSize = (maxVal - minVal) / numBins;
+    const binCounts = Array(numBins).fill(0);
+    for (const sample of validSamples) {
+        let binIndex = binSize === 0 ? 0 : Math.floor((sample - minVal) / binSize);
+        if (binIndex >= numBins) binIndex = numBins - 1;
+        if (binIndex < 0) binIndex = 0;
+        binCounts[binIndex]++;
+    }
+
+    const maxCount = Math.max(...binCounts);
+    if (maxCount === 0) return ["Cannot generate histogram (max count is zero)."];
+
+    for (let i = numBins - 1; i >= 0; i--) {
+        const binStart = minVal + i * binSize;
+        const count = binCounts[i];
+        const barWidth = maxCount === 0 ? 0 : Math.round((count / maxCount) * maxBarWidth);
+        const bar = BAR_CHAR.repeat(barWidth);
+        const label = formatNumber(binStart, 7);
+
+        let line = `<div class="histogram-line"><span class="histogram-label">${label}</span><span class="histogram-separator">|</span><span class="histogram-bar">${bar}`;
+        let meanBinIndex = binSize === 0 ? 0 : Math.floor((sampleMean - minVal) / binSize);
+        if (meanBinIndex >= numBins) meanBinIndex = numBins - 1;
+        if (meanBinIndex < 0) meanBinIndex = 0;
+        if (i === meanBinIndex) {
+            line += ` (Sample Mean ≈${formatNumber(sampleMean)})`;
+        }
+        line += `</span></div>`;
+        output.push(line);
+    }
+    return output;
+}
+
+function evaluateExpression(expression) {
+    const tokens = tokenize(expression);
+    const rpn = shuntingYard(tokens);
+    return evalRpn(rpn);
+}
+
+function setupBrowserHandlers() {
+    if (typeof document === 'undefined') return;
+
+    const expressionInput = document.getElementById("expression");
+    const calculateBtn = document.getElementById("calculateBtn");
+    const resultSummaryDisplay = document.getElementById("result-summary");
+    const resultHistogramDisplay = document.getElementById("result-histogram");
+    const resultContainer = document.getElementById("result-container");
+
+    if (!expressionInput || !calculateBtn || !resultSummaryDisplay || !resultHistogramDisplay || !resultContainer) {
+        return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const expr = decodeURIComponent(params.get('expr'));
+    if (expr && expr !== "null") {
+        expressionInput.value = expr;
+    }
+
+    function reset() {
+        expressionInput.value = "";
+        calculate();
+        expressionInput.focus();
+    }
+
+    function calculate() {
+        const expression = expressionInput.value;
+        resultSummaryDisplay.innerHTML = "<div>Calculating...</div>";
+        resultHistogramDisplay.innerHTML = "";
+        resultContainer.classList.add("hidden");
+        resultContainer.classList.remove("border-red-600");
+        resultSummaryDisplay.classList.remove("text-red-600");
+
+        if (expression) {
+            const params = new URLSearchParams();
+            params.set('expr', encodeURIComponent(expression));
+            window.history.pushState(null, '', `?${params.toString()}`);
+        }
+
+        setTimeout(() => {
+            try {
+                if (!expression.trim()) {
+                    resultSummaryDisplay.innerHTML = "";
+                    return;
+                }
+                const tokens = tokenize(expression);
+                const rpn = shuntingYard(tokens);
+                const result = evalRpn(rpn);
+
+                if (!result) {
+                    resultSummaryDisplay.innerHTML = "";
+                    return;
+                }
+
+                let summaryHtml = "";
+                let hasError = false;
+
+                if (isNaN(result.mean) || isNaN(result.min) || isNaN(result.max)) {
+                    summaryHtml += `<div><span class="text-red-600">Exact Result Contains NaN</span></div>`;
+                    hasError = true;
+                } else {
+                    summaryHtml += `<div>Exact Average: ${formatNumber(result.mean)}</div>`;
+                    summaryHtml += `<div>Exact Range : ${formatNumber(result.min)} - ${formatNumber(result.max)}</div>`;
+                }
+
+                if (result.samples) {
+                    const quantiles = getQuantiles(result.samples);
+                    if (isNaN(quantiles.p05) || isNaN(quantiles.p95)) {
+                        summaryHtml += `<div><span class="text-red-600">Simulated Result Contains NaN/Infinity</span></div>`;
+                        hasError = true;
+                    } else {
+                        summaryHtml += `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)} ~ ${formatNumber(quantiles.p95)}</div>`;
+                    }
+                    const histogramLines = generateTextHistogram(result.samples);
+                    resultHistogramDisplay.innerHTML = histogramLines.join("");
+                } else {
+                    resultHistogramDisplay.innerHTML = "";
+                    summaryHtml += `<div class="mt-2">Result is an exact number, no distribution to simulate</div>`;
+                }
+
+                resultSummaryDisplay.innerHTML = summaryHtml;
+                if (hasError) {
+                    resultContainer.classList.add("border-red-600");
+                }
+            } catch (error) {
+                console.error("Calculation Error:", error);
+                resultSummaryDisplay.innerHTML = `<div><span class="text-red-600">Error: ${error.message}</span></div>`;
+                resultContainer.classList.add("border-red-600");
+                resultHistogramDisplay.innerHTML = "";
+            }
+            resultContainer.classList.remove("hidden");
+        }, 10);
+    }
+
+    calculateBtn.addEventListener("click", calculate);
+    expressionInput.addEventListener("keypress", (event) => {
+        if (event.key === "Enter") calculate();
+    });
+    document.querySelector('h1')?.addEventListener('click', reset);
+
+    if (!expressionInput.value) {
+        expressionInput.value = "7~10 * 17~23";
+    }
+    calculate();
+
+    // Export to window for manual debugging
+    window.unsureCalc = {
+        tokenize,
+        shuntingYard,
+        evalRpn,
+        evaluateExpression,
+        reset,
+        calculate,
+    };
+}
+
+// Run in browser
+setupBrowserHandlers();
+
+// Export for Node tests
+if (typeof module !== 'undefined') {
+    module.exports = {
+        tokenize,
+        shuntingYard,
+        evalRpn,
+        evaluateExpression,
+    };
+}
