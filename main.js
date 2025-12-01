@@ -431,8 +431,6 @@ function evaluateExpression(expression) {
 }
 
 function setupBrowserHandlers() {
-    if (typeof document === 'undefined') return;
-
     const expressionInput = document.getElementById("expression");
     const calculateBtn = document.getElementById("calculateBtn");
     const resultSummaryDisplay = document.getElementById("result-summary");
@@ -460,6 +458,7 @@ function setupBrowserHandlers() {
         resultSummaryDisplay.innerHTML = "<div>Calculating...</div>";
         resultHistogramDisplay.innerHTML = "";
         resultContainer.style.visibility = "hidden";
+        resultContainer.classList.remove("hidden");
         resultContainer.classList.remove("border-red-600");
         resultSummaryDisplay.classList.remove("text-red-600");
 
@@ -549,7 +548,9 @@ function setupBrowserHandlers() {
 }
 
 // Run in browser
-setupBrowserHandlers();
+document.addEventListener("DOMContentLoaded", () => {
+  setupBrowserHandlers()
+})
 
 // Export for Node tests
 if (typeof module !== 'undefined') {
