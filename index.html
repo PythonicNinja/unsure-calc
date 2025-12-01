@@ -4,8 +4,32 @@
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>unSure Calculator</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap" rel="stylesheet">
+
+        <!-- Performance: preconnect + defer loading for Tailwind CDN -->
+        <link rel="preconnect" href="https://cdn.tailwindcss.com" />
+        <link rel="preload" as="script" href="https://cdn.tailwindcss.com" />
+        <script src="https://cdn.tailwindcss.com" defer></script>
+
+        <!-- Performance: font preconnect + non-blocking load -->
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            rel="preload"
+            as="style"
+            href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap"
+        />
+        <link
+            rel="stylesheet"
+            href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap"
+            media="print"
+            onload="this.media='all'"
+        />
+        <noscript>
+            <link
+                rel="stylesheet"
+                href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap"
+            />
+        </noscript>
         <style>
             body {
                 font-family: 'Manrope', 'Inter', 'system-ui', 'Segoe UI', Arial, sans-serif;
