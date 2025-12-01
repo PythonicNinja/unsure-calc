@@ -1,1 +1,18 @@
 # unsure-calc
+
+Lightweight probabilistic calculator that lets you type ranges (with `~`) and arithmetic to see exact bounds plus simulated outcomes and a text histogram.
+
+## Getting started
+1. Install prerequisites: `node` (v18+ for `node:test`) and `python3` for the simple dev server.
+2. Run `make dev` then open `http://localhost:8000` (override port with `DEV_PORT=9000 make dev`).
+3. Run `make test` to execute the Node unit tests.
+
+## Project structure
+- `index.html` — UI shell that loads Tailwind and the calculator script.
+- `main.js` — all calculator logic (tokenizer, shunting yard with unary minus, evaluator, histogram) shared by browser and tests.
+- `tests/main.test.js` — minimal `node:test` suite covering tokenization, unary minus handling, precedence, and range evaluation.
+- `Makefile` — quick commands for local dev and tests.
+
+## Makefile cheatsheet
+- `make dev` — serve the app via `python3 -m http.server $(DEV_PORT)` (defaults to 8000).
+- `make test` — run the Node test suite (`node --test tests`).
