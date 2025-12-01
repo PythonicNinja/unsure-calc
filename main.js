@@ -7,6 +7,7 @@ const BAR_CHAR = "█";
 
 let spareRandom = null;
 
+// Gaussian (normal) RNG using the Box-Muller transform; returns N(mean, stdDev)
 function gaussianRandom(mean, stdDev) {
     let u, v, s;
     if (spareRandom !== null) {
@@ -24,6 +25,7 @@ function gaussianRandom(mean, stdDev) {
     return mean + stdDev * (u * mul);
 }
 
+// Generate NUM_SAMPLES draws from N(mean, stdDev); fast path for zero-width ranges
 function generateSamples(mean, stdDev) {
     if (stdDev === 0) {
         return Array(NUM_SAMPLES).fill(mean);
@@ -36,6 +38,7 @@ function generateSamples(mean, stdDev) {
 }
 
 // --- Tokenizer ---
+// Tokenize an expression string into numbers/operators; minus stays separate for unary detection
 function tokenize(s) {
     const tokens = [];
     const NUMBER_REGEX = /^[0-9]+(\.[0-9]+)?/;
@@ -69,6 +72,7 @@ function tokenize(s) {
     return tokens;
 }
 
+// Convert tokens to Reverse Polish Notation (handles unary minus via synthetic NEG token)
 function shuntingYard(tokens) {
     let prevToken = null;
     const outputQueue = [];
@@ -136,6 +140,7 @@ function shuntingYard(tokens) {
     return outputQueue;
 }
 
+// Evaluate RPN queue into an UncertainValue (mean/min/max/samples), handling NEG and '~'
 function evalRpn(rpnQueue) {
     const stack = [];
 
@@ -315,6 +320,7 @@ function evalRpn(rpnQueue) {
     return stack[0];
 }
 
+// Return 5th and 95th percentiles from sample array, ignoring NaN/Inf
 function getQuantiles(samples) {
     if (!Array.isArray(samples) || samples.length === 0) return { p05: NaN, p95: NaN };
     const validSamples = samples.filter((n) => !isNaN(n) && isFinite(n));
@@ -329,6 +335,7 @@ function getQuantiles(samples) {
     };
 }
 
+// Nicely format numbers with adaptive precision and optional left padding
 function formatNumber(num, padWidth = 0) {
     let str;
     const absNum = Math.abs(num);
@@ -353,6 +360,7 @@ function formatNumber(num, padWidth = 0) {
     return padWidth > 0 ? str.padStart(padWidth) : str;
 }
 
+// Average of valid numeric samples; returns NaN if no usable values
 function calculateSampleMean(samples) {
     if (!Array.isArray(samples) || samples.length === 0) return NaN;
     const validSamples = samples.filter((n) => !isNaN(n) && isFinite(n));
@@ -361,6 +369,7 @@ function calculateSampleMean(samples) {
     return sum / validSamples.length;
 }
 
+// Build HTML strings for a simple text histogram of sample distribution
 function generateTextHistogram(samples) {
     const numBins = HISTOGRAM_BINS;
     const maxBarWidth = HISTOGRAM_MAX_WIDTH;
@@ -412,6 +421,7 @@ function generateTextHistogram(samples) {
     return output;
 }
 
+// Convenience: run full pipeline (tokenize -> RPN -> evaluate) and return UncertainValue
 function evaluateExpression(expression) {
     const tokens = tokenize(expression);
     const rpn = shuntingYard(tokens);
@@ -447,7 +457,7 @@ function setupBrowserHandlers() {
         const expression = expressionInput.value;
         resultSummaryDisplay.innerHTML = "<div>Calculating...</div>";
         resultHistogramDisplay.innerHTML = "";
-        resultContainer.classList.add("hidden");
+        resultContainer.style.visibility = "hidden";
         resultContainer.classList.remove("border-red-600");
         resultSummaryDisplay.classList.remove("text-red-600");
 
@@ -460,7 +470,9 @@ function setupBrowserHandlers() {
         setTimeout(() => {
             try {
                 if (!expression.trim()) {
-                    resultSummaryDisplay.innerHTML = "";
+                    resultSummaryDisplay.innerHTML = "Enter an expression to calculate.";
+                    resultHistogramDisplay.innerHTML = "";
+                    resultContainer.style.visibility = "visible";
                     return;
                 }
                 const tokens = tokenize(expression);
@@ -508,7 +520,7 @@ function setupBrowserHandlers() {
                 resultContainer.classList.add("border-red-600");
                 resultHistogramDisplay.innerHTML = "";
             }
-            resultContainer.classList.remove("hidden");
+            resultContainer.style.visibility = "visible";
         }, 10);
     }
 
