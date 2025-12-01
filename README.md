@@ -20,11 +20,11 @@ Deployed at: https://calc.pythonic.ninja
 ```mermaid
 flowchart TD
     A[User Input] --> B[tokenize]
-    B --> C[shuntingYard<br/>to RPN]
-    C --> D[evalRpn<br/>UncertainValue]
-    D --> E[formatNumber<br/>getQuantiles<br/>generateTextHistogram]
-    E --> F[DOM render<br/>(main.js browser handlers)]
-    subgraph Tests (node --test)
+    B --> C[shuntingYard to RPN]
+    C --> D[evalRpn UncertainValue]
+    D --> E[formatNumber getQuantiles generateTextHistogram]
+    E --> F[DOM render main.js browser handlers]
+    subgraph Tests
       B
       C
       D
