@@ -8,6 +8,7 @@ const BAR_CHAR = "█";
 let spareRandom = null;
 
 // Gaussian (normal) RNG using the Box-Muller transform; returns N(mean, stdDev)
+// https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
 function gaussianRandom(mean, stdDev) {
     let u, v, s;
     if (spareRandom !== null) {
@@ -73,6 +74,7 @@ function tokenize(s) {
 }
 
 // Convert tokens to Reverse Polish Notation (handles unary minus via synthetic NEG token)
+// https://en.wikipedia.org/wiki/Shunting_yard_algorithm
 function shuntingYard(tokens) {
     let prevToken = null;
     const outputQueue = [];
