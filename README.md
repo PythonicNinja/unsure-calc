@@ -47,17 +47,3 @@ flowchart TD
 ## Makefile cheatsheet
 - `make dev` — serve the app via `python3 -m http.server $(DEV_PORT)` (defaults to 8000).
 - `make test` — run the Node test suite (`node --test core/tests/*.test.js`).
-
-## Raycast extension
-Lives in `raycast-extension/` and reuses `../core/calc-core.js` so everything stays in sync.
-
-Files (under `raycast-extension/`)
-- `package.json` — Raycast manifest (commands, prefs) plus npm deps; mirrors `raycast.json` for reference.
-- `raycast.json` — same manifest data (kept for clarity).
-- `src/calc.tsx` — Raycast command UI and thin re-export of the shared core for TypeScript.
-
-Run it locally
-1. Ensure Raycast is installed and its CLI is enabled (or that `npx ray` works).
-2. `cd raycast-extension && npm install`
-3. `npx ray develop`
-4. Launch the command “UnSure Calculator” and type expressions like `7~10 * 17~23` or `(100~130)/(2~4)`.
