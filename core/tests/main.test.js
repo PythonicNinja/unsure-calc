@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('assert');
-const { tokenize, shuntingYard, evaluateExpression } = require('../main');
+const { tokenize, shuntingYard, evaluateExpression } = require('../calc-core');
 
 test('Tokenizer keeps minus separate from number', () => {
     const tokens = tokenize('1-2');
