@@ -4,6 +4,18 @@
 
 Lightweight probabilistic calculator that lets you type ranges (with `~`) and arithmetic to see exact bounds plus simulated outcomes and a text histogram.
 
+It also supports currency expressions with step-by-step simplification, e.g.:
+
+`120usd + 50eur to pln`
+
+Notes:
+- `to <currency>` converts the expression result to the target currency.
+- Trailing arithmetic after conversion is supported (`to pln * 20 * 12`).
+- Web app fetches daily FX rates (once per local day) from Frankfurter/ECB for 25 major currencies (EUR base + 24 symbols).
+- Supported symbols in daily feed: `EUR, USD, GBP, JPY, CHF, CAD, AUD, NZD, SEK, NOK, DKK, PLN, CZK, HUF, RON, TRY, CNY, HKD, SGD, KRW, INR, MXN, BRL, ZAR, AED`.
+- If live fetch fails, the app falls back to a local EUR/PLN snapshot (`4.22`).
+- Rates can still be overridden programmatically with `evaluateExpressionWithSteps(..., { currencyRates })`.
+
 Deployed at: https://calc.pythonic.ninja
 
 ## Getting started
@@ -34,7 +46,7 @@ flowchart TD
 
 ## Makefile cheatsheet
 - `make dev` — serve the app via `python3 -m http.server $(DEV_PORT)` (defaults to 8000).
-- `make test` — run the Node test suite (`node --test core/tests`).
+- `make test` — run the Node test suite (`node --test core/tests/*.test.js`).
 
 ## Raycast extension
 Lives in `raycast-extension/` and reuses `../core/calc-core.js` so everything stays in sync.

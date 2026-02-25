@@ -5,6 +5,11 @@ const DEFAULT_SAMPLES = 10000;
 const DEFAULT_BINS = 20;
 const DEFAULT_WIDTH = 40;
 const DEFAULT_BAR = "█";
+const BASE_CURRENCY_TOKEN = "__base__";
+const DEFAULT_CURRENCY_RATES = {
+  eur: { pln: 4.22 },
+  pln: { eur: 1 / 4.22 },
+};
 
 let spareRandom = null;
 
@@ -325,6 +330,631 @@ function evaluateExpression(expression, sampleCount = DEFAULT_SAMPLES) {
   return evalRpn(rpn, sampleCount);
 }
 
+function roundCurrencyValue(value) {
+  if (isNaN(value) || !isFinite(value)) return value;
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function formatCurrencyAmount(value, fixedDecimals = false) {
+  if (isNaN(value) || !isFinite(value)) return formatNumber(value);
+  const rounded = roundCurrencyValue(value);
+  if (fixedDecimals) return rounded.toFixed(2);
+  return rounded.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function formatScalarAmount(value) {
+  if (isNaN(value) || !isFinite(value)) return formatNumber(value);
+  const normalized = Math.abs(value) < 1e-12 ? 0 : value;
+  const fixed = normalized.toFixed(6);
+  return fixed.replace(/\.?0+$/, "");
+}
+
+function createScalarLiteral(value) {
+  return { type: "literal", kind: "scalar", value };
+}
+
+function createMoneyLiteral(value, currency) {
+  return { type: "literal", kind: "money", value, currency: currency.toLowerCase() };
+}
+
+function isLiteralNode(node) {
+  return !!node && node.type === "literal";
+}
+
+function cloneCurrencyNode(node) {
+  if (isLiteralNode(node)) {
+    if (node.kind === "money") return createMoneyLiteral(node.value, node.currency);
+    return createScalarLiteral(node.value);
+  }
+  if (node.type === "base") return { type: "base" };
+  if (node.type === "unary") {
+    return { type: "unary", operator: node.operator, value: cloneCurrencyNode(node.value) };
+  }
+  if (node.type === "binary") {
+    return {
+      type: "binary",
+      operator: node.operator,
+      left: cloneCurrencyNode(node.left),
+      right: cloneCurrencyNode(node.right),
+    };
+  }
+  throw new Error(`Unknown node type: ${node.type}`);
+}
+
+function lexCurrencyExpression(input) {
+  const tokens = [];
+  let i = 0;
+
+  while (i < input.length) {
+    const ch = input[i];
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+
+    if (/[0-9]/.test(ch)) {
+      const start = i;
+      while (i < input.length && /[0-9]/.test(input[i])) i++;
+      if (i < input.length && input[i] === ".") {
+        i++;
+        while (i < input.length && /[0-9]/.test(input[i])) i++;
+      }
+      const numberRaw = input.slice(start, i);
+      const numberValue = parseFloat(numberRaw);
+
+      const suffixStart = i;
+      while (i < input.length && /[A-Za-z]/.test(input[i])) i++;
+      const suffix = input.slice(suffixStart, i);
+
+      if (suffix) {
+        tokens.push({
+          type: "money",
+          value: numberValue,
+          currency: suffix.toLowerCase(),
+          raw: input.slice(start, i),
+        });
+      } else {
+        tokens.push({ type: "number", value: numberValue, raw: numberRaw });
+      }
+      continue;
+    }
+
+    if (/[A-Za-z_]/.test(ch)) {
+      const start = i;
+      while (i < input.length && /[A-Za-z_]/.test(input[i])) i++;
+      const raw = input.slice(start, i);
+      const lowered = raw.toLowerCase();
+      if (lowered === "to") {
+        tokens.push({ type: "to", raw });
+      } else {
+        tokens.push({ type: "identifier", value: lowered, raw });
+      }
+      continue;
+    }
+
+    if ("+-*/^()~".includes(ch)) {
+      tokens.push({ type: "operator", value: ch, raw: ch });
+      i++;
+      continue;
+    }
+
+    throw new Error(`Syntax Error: Unsupported character '${ch}' in expression`);
+  }
+
+  return tokens;
+}
+
+function formatTokenSequence(tokens) {
+  const raw = tokens
+    .map((token) => {
+      if (token.type === "money") return `${formatCurrencyAmount(token.value)}${token.currency}`;
+      if (token.type === "number") return formatScalarAmount(token.value);
+      if (token.type === "identifier") return token.value;
+      if (token.type === "operator") return token.value;
+      if (token.type === "to") return "to";
+      return token.raw ?? "";
+    })
+    .join(" ");
+
+  return raw
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")")
+    .replace(/\s+([+\-*/^~])/g, " $1")
+    .replace(/([+\-*/^~])\s+/g, "$1 ")
+    .trim();
+}
+
+function findTopLevelToToken(tokens) {
+  let depth = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type === "operator" && token.value === "(") depth++;
+    else if (token.type === "operator" && token.value === ")") depth--;
+    else if (token.type === "to" && depth === 0) return i;
+  }
+  return -1;
+}
+
+function parseCurrencyExpressionTokens(tokens, options = {}) {
+  const allowBaseToken = !!options.allowBaseToken;
+  const allowCurrencySuffix = options.allowCurrencySuffix !== false;
+  let index = 0;
+
+  const peek = (offset = 0) => tokens[index + offset] || null;
+  const consume = () => {
+    const token = tokens[index];
+    index++;
+    return token;
+  };
+
+  const matchOperator = (value) => {
+    const token = peek();
+    if (token && token.type === "operator" && token.value === value) {
+      consume();
+      return true;
+    }
+    return false;
+  };
+
+  const parseExpressionNode = () => parseAddSub();
+
+  const parseAddSub = () => {
+    let node = parseMulDiv();
+    while (true) {
+      if (matchOperator("+")) node = { type: "binary", operator: "+", left: node, right: parseMulDiv() };
+      else if (matchOperator("-")) node = { type: "binary", operator: "-", left: node, right: parseMulDiv() };
+      else break;
+    }
+    return node;
+  };
+
+  const parseMulDiv = () => {
+    let node = parsePower();
+    while (true) {
+      if (matchOperator("*")) node = { type: "binary", operator: "*", left: node, right: parsePower() };
+      else if (matchOperator("/")) node = { type: "binary", operator: "/", left: node, right: parsePower() };
+      else break;
+    }
+    return node;
+  };
+
+  const parsePower = () => {
+    let node = parseRange();
+    while (matchOperator("^")) {
+      node = { type: "binary", operator: "^", left: node, right: parseRange() };
+    }
+    return node;
+  };
+
+  const parseRange = () => {
+    let node = parseUnary();
+    while (matchOperator("~")) {
+      node = { type: "binary", operator: "~", left: node, right: parseUnary() };
+    }
+    return node;
+  };
+
+  const parseUnary = () => {
+    if (matchOperator("-")) return { type: "unary", operator: "-", value: parseUnary() };
+    return parsePrimary();
+  };
+
+  const parsePrimary = () => {
+    const token = peek();
+    if (!token) throw new Error("Unexpected end of expression");
+
+    if (token.type === "operator" && token.value === "(") {
+      consume();
+      const node = parseExpressionNode();
+      if (!matchOperator(")")) throw new Error("Mismatched parentheses in expression");
+      return node;
+    }
+
+    if (token.type === "money") {
+      consume();
+      return createMoneyLiteral(token.value, token.currency);
+    }
+
+    if (token.type === "number") {
+      consume();
+      const next = peek();
+      if (
+        allowCurrencySuffix &&
+        next &&
+        next.type === "identifier" &&
+        next.value !== BASE_CURRENCY_TOKEN
+      ) {
+        consume();
+        return createMoneyLiteral(token.value, next.value);
+      }
+      return createScalarLiteral(token.value);
+    }
+
+    if (token.type === "identifier") {
+      consume();
+      if (allowBaseToken && token.value === BASE_CURRENCY_TOKEN) {
+        return { type: "base" };
+      }
+      throw new Error(`Unexpected identifier '${token.value}'`);
+    }
+
+    throw new Error(`Unexpected token '${token.raw ?? token.type}'`);
+  };
+
+  const parsed = parseExpressionNode();
+  if (index !== tokens.length) {
+    const token = tokens[index];
+    throw new Error(`Unexpected token '${token.raw ?? token.type}'`);
+  }
+  return parsed;
+}
+
+function buildCurrencyRateMap(customRates = null) {
+  const map = {};
+
+  const addRate = (from, to, rate) => {
+    if (!from || !to || typeof rate !== "number" || !isFinite(rate) || rate <= 0) return;
+    const fromKey = from.toLowerCase();
+    const toKey = to.toLowerCase();
+    if (!map[fromKey]) map[fromKey] = {};
+    map[fromKey][toKey] = rate;
+  };
+
+  const addRateSet = (rateSet) => {
+    if (!rateSet || typeof rateSet !== "object") return;
+    for (const [from, targets] of Object.entries(rateSet)) {
+      if (!targets || typeof targets !== "object") continue;
+      for (const [to, rate] of Object.entries(targets)) {
+        addRate(from, to, rate);
+      }
+    }
+  };
+
+  addRateSet(DEFAULT_CURRENCY_RATES);
+  addRateSet(customRates);
+
+  for (const [from, targets] of Object.entries(map)) {
+    for (const [to, rate] of Object.entries(targets)) {
+      if (!map[to]) map[to] = {};
+      map[to][from] = 1 / rate;
+    }
+  }
+
+  return map;
+}
+
+function getCurrencyRate(fromCurrency, toCurrency, rates) {
+  const from = fromCurrency.toLowerCase();
+  const to = toCurrency.toLowerCase();
+  if (from === to) return 1;
+  if (rates[from] && typeof rates[from][to] === "number") return rates[from][to];
+  if (rates[to] && typeof rates[to][from] === "number") return 1 / rates[to][from];
+
+  // Fall back to graph traversal so currencies can be bridged through
+  // intermediary rates (for example PLN->EUR->USD).
+  const visited = new Set([from]);
+  const queue = [{ currency: from, cumulativeRate: 1 }];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    const neighbors = rates[current.currency] || {};
+
+    for (const [nextCurrency, edgeRate] of Object.entries(neighbors)) {
+      if (typeof edgeRate !== "number" || !isFinite(edgeRate) || edgeRate <= 0) continue;
+      if (visited.has(nextCurrency)) continue;
+
+      const nextRate = current.cumulativeRate * edgeRate;
+      if (nextCurrency === to) return nextRate;
+
+      visited.add(nextCurrency);
+      queue.push({ currency: nextCurrency, cumulativeRate: nextRate });
+    }
+  }
+
+  throw new Error(`Missing exchange rate path for ${fromCurrency}->${toCurrency}`);
+}
+
+function convertLiteralCurrency(literal, targetCurrency, rates) {
+  if (!isLiteralNode(literal)) throw new Error("Cannot convert non-literal value");
+  if (literal.kind !== "money") throw new Error(`Cannot convert scalar value to ${targetCurrency}`);
+  const target = targetCurrency.toLowerCase();
+  if (literal.currency === target) return createMoneyLiteral(literal.value, target);
+  const rate = getCurrencyRate(literal.currency, target, rates);
+  return createMoneyLiteral(roundCurrencyValue(literal.value * rate), target);
+}
+
+function evaluateCurrencyUnary(node) {
+  if (node.operator !== "-") throw new Error(`Unsupported unary operator '${node.operator}'`);
+  if (!isLiteralNode(node.value)) throw new Error("Unary operator requires literal operand");
+  if (node.value.kind === "money") {
+    return createMoneyLiteral(roundCurrencyValue(-node.value.value), node.value.currency);
+  }
+  return createScalarLiteral(-node.value.value);
+}
+
+function evaluateCurrencyBinary(node, rates) {
+  if (!isLiteralNode(node.left) || !isLiteralNode(node.right)) {
+    throw new Error(`Operator '${node.operator}' requires literal operands`);
+  }
+
+  const left = node.left;
+  const right = node.right;
+  const op = node.operator;
+
+  if (op === "~") {
+    if (left.kind !== "scalar" || right.kind !== "scalar") {
+      throw new Error("Range operator '~' supports scalar values only");
+    }
+    return createScalarLiteral((left.value + right.value) / 2);
+  }
+
+  if (op === "+" || op === "-") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      return createScalarLiteral(op === "+" ? left.value + right.value : left.value - right.value);
+    }
+    if (left.kind === "money" && right.kind === "money") {
+      const rightInLeftCurrency =
+        right.currency === left.currency ? right : convertLiteralCurrency(right, left.currency, rates);
+      const resultValue = op === "+" ? left.value + rightInLeftCurrency.value : left.value - rightInLeftCurrency.value;
+      return createMoneyLiteral(roundCurrencyValue(resultValue), left.currency);
+    }
+    throw new Error(`Cannot ${op === "+" ? "add" : "subtract"} scalar and currency values`);
+  }
+
+  if (op === "*") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      return createScalarLiteral(left.value * right.value);
+    }
+    if (left.kind === "money" && right.kind === "scalar") {
+      return createMoneyLiteral(roundCurrencyValue(left.value * right.value), left.currency);
+    }
+    if (left.kind === "scalar" && right.kind === "money") {
+      return createMoneyLiteral(roundCurrencyValue(left.value * right.value), right.currency);
+    }
+    throw new Error("Multiplying two currency values is not supported");
+  }
+
+  if (op === "/") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      return createScalarLiteral(right.value === 0 ? NaN : left.value / right.value);
+    }
+    if (left.kind === "money" && right.kind === "scalar") {
+      return createMoneyLiteral(roundCurrencyValue(right.value === 0 ? NaN : left.value / right.value), left.currency);
+    }
+    if (left.kind === "money" && right.kind === "money") {
+      return createScalarLiteral(right.value === 0 ? NaN : left.value / right.value);
+    }
+    throw new Error("Cannot divide scalar by a currency value");
+  }
+
+  if (op === "^") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      return createScalarLiteral(Math.pow(left.value, right.value));
+    }
+    if (left.kind === "money" && right.kind === "scalar") {
+      return createMoneyLiteral(roundCurrencyValue(Math.pow(left.value, right.value)), left.currency);
+    }
+    throw new Error("Power is supported for scalar^scalar or money^scalar only");
+  }
+
+  throw new Error(`Unsupported operator '${op}'`);
+}
+
+function reduceCurrencyAstOneLayer(node, rates) {
+  if (isLiteralNode(node) || node.type === "base") {
+    return { node, changed: false };
+  }
+
+  if (node.type === "unary") {
+    const reducedValue = reduceCurrencyAstOneLayer(node.value, rates);
+    const nextNode = { type: "unary", operator: node.operator, value: reducedValue.node };
+    if (reducedValue.changed) return { node: nextNode, changed: true };
+    if (isLiteralNode(nextNode.value)) return { node: evaluateCurrencyUnary(nextNode), changed: true };
+    return { node: nextNode, changed: false };
+  }
+
+  if (node.type === "binary") {
+    const reducedLeft = reduceCurrencyAstOneLayer(node.left, rates);
+    const reducedRight = reduceCurrencyAstOneLayer(node.right, rates);
+    const nextNode = {
+      type: "binary",
+      operator: node.operator,
+      left: reducedLeft.node,
+      right: reducedRight.node,
+    };
+
+    if (reducedLeft.changed || reducedRight.changed) {
+      return { node: nextNode, changed: true };
+    }
+    if (isLiteralNode(nextNode.left) && isLiteralNode(nextNode.right)) {
+      return { node: evaluateCurrencyBinary(nextNode, rates), changed: true };
+    }
+    return { node: nextNode, changed: false };
+  }
+
+  throw new Error(`Unsupported AST node type '${node.type}'`);
+}
+
+function getCurrencyAstPrecedence(node) {
+  if (node.type === "unary") return 5;
+  if (node.type === "binary") {
+    if (node.operator === "+" || node.operator === "-") return 1;
+    if (node.operator === "*" || node.operator === "/") return 2;
+    if (node.operator === "^") return 3;
+    if (node.operator === "~") return 4;
+  }
+  return 99;
+}
+
+function formatCurrencyLiteral(node) {
+  if (node.kind === "money") return `${formatCurrencyAmount(node.value)}${node.currency}`;
+  return formatScalarAmount(node.value);
+}
+
+function formatCurrencyAst(node, parentPrecedence = 0, isRightChild = false, parentOperator = null) {
+  if (isLiteralNode(node)) return formatCurrencyLiteral(node);
+  if (node.type === "base") return BASE_CURRENCY_TOKEN;
+
+  if (node.type === "unary") {
+    const selfPrecedence = getCurrencyAstPrecedence(node);
+    let valueText = formatCurrencyAst(node.value, 0, true, node.operator);
+    const valuePrecedence = getCurrencyAstPrecedence(node.value);
+    if (valuePrecedence < selfPrecedence) valueText = `(${valueText})`;
+    let rendered = `-${valueText}`;
+    if (selfPrecedence < parentPrecedence) return `(${rendered})`;
+    return rendered;
+  }
+
+  if (node.type === "binary") {
+    const selfPrecedence = getCurrencyAstPrecedence(node);
+
+    let leftText = formatCurrencyAst(node.left, 0, false, node.operator);
+    const leftPrecedence = getCurrencyAstPrecedence(node.left);
+    if (leftPrecedence < selfPrecedence) leftText = `(${leftText})`;
+    if (node.operator === "^" && leftPrecedence === selfPrecedence) leftText = `(${leftText})`;
+
+    let rightText = formatCurrencyAst(node.right, 0, true, node.operator);
+    const rightPrecedence = getCurrencyAstPrecedence(node.right);
+    const needsRightWrap =
+      rightPrecedence < selfPrecedence ||
+      (rightPrecedence === selfPrecedence && (node.operator === "-" || node.operator === "/" || node.operator === "^"));
+    if (needsRightWrap) rightText = `(${rightText})`;
+
+    let rendered = `${leftText} ${node.operator} ${rightText}`;
+    const parentRequiresWrap =
+      selfPrecedence < parentPrecedence ||
+      (isRightChild && parentOperator === "^" && selfPrecedence === parentPrecedence);
+
+    if (parentRequiresWrap) rendered = `(${rendered})`;
+    return rendered;
+  }
+
+  throw new Error(`Unsupported AST node for formatting: ${node.type}`);
+}
+
+function replaceBaseNode(node, replacement) {
+  if (node.type === "base") return cloneCurrencyNode(replacement);
+  if (isLiteralNode(node)) return cloneCurrencyNode(node);
+  if (node.type === "unary") {
+    return { type: "unary", operator: node.operator, value: replaceBaseNode(node.value, replacement) };
+  }
+  if (node.type === "binary") {
+    return {
+      type: "binary",
+      operator: node.operator,
+      left: replaceBaseNode(node.left, replacement),
+      right: replaceBaseNode(node.right, replacement),
+    };
+  }
+  throw new Error(`Unsupported node for base replacement: ${node.type}`);
+}
+
+function evaluateCurrencyExpressionWithSteps(expression, options = {}) {
+  const tokens = lexCurrencyExpression(expression);
+  const topLevelToIndex = findTopLevelToToken(tokens);
+  const hasAdjacentCurrencySuffix = tokens.some(
+    (token, idx) =>
+      token.type === "number" &&
+      tokens[idx + 1] &&
+      tokens[idx + 1].type === "identifier" &&
+      tokens[idx + 1].value !== BASE_CURRENCY_TOKEN,
+  );
+  const looksLikeCurrencyExpression =
+    topLevelToIndex >= 0 || tokens.some((token) => token.type === "money") || hasAdjacentCurrencySuffix;
+
+  if (!looksLikeCurrencyExpression) return null;
+
+  const rates = buildCurrencyRateMap(options.currencyRates);
+  const leftTokens = topLevelToIndex >= 0 ? tokens.slice(0, topLevelToIndex) : tokens;
+  if (leftTokens.length === 0) throw new Error("Missing expression before currency conversion");
+
+  let targetCurrency = null;
+  let tailTokens = [];
+  if (topLevelToIndex >= 0) {
+    const targetToken = tokens[topLevelToIndex + 1];
+    if (!targetToken || targetToken.type !== "identifier") {
+      throw new Error("Expected target currency after 'to'");
+    }
+    targetCurrency = targetToken.value;
+    tailTokens = tokens.slice(topLevelToIndex + 2);
+  }
+
+  const leftAst = parseCurrencyExpressionTokens(leftTokens, { allowBaseToken: false, allowCurrencySuffix: true });
+  const conversionSuffix = targetCurrency
+    ? `to ${targetCurrency}${tailTokens.length > 0 ? ` ${formatTokenSequence(tailTokens)}` : ""}`
+    : "";
+
+  const appendSuffix = (content) => (conversionSuffix ? `${content} ${conversionSuffix}` : content);
+
+  const steps = [];
+  let reducedLeft = leftAst;
+  steps.push(appendSuffix(formatCurrencyAst(reducedLeft)));
+
+  while (!isLiteralNode(reducedLeft)) {
+    const next = reduceCurrencyAstOneLayer(reducedLeft, rates);
+    if (!next.changed) throw new Error("Unable to simplify expression");
+    reducedLeft = next.node;
+    steps.push(appendSuffix(formatCurrencyAst(reducedLeft)));
+  }
+
+  let finalAst = reducedLeft;
+  if (targetCurrency) {
+    finalAst = convertLiteralCurrency(finalAst, targetCurrency, rates);
+
+    if (tailTokens.length > 0) {
+      const tailExpressionTokens = [
+        { type: "identifier", value: BASE_CURRENCY_TOKEN, raw: BASE_CURRENCY_TOKEN },
+        ...tailTokens,
+      ];
+      const tailAst = parseCurrencyExpressionTokens(tailExpressionTokens, {
+        allowBaseToken: true,
+        allowCurrencySuffix: true,
+      });
+      finalAst = replaceBaseNode(tailAst, finalAst);
+      steps.push(formatCurrencyAst(finalAst));
+
+      while (!isLiteralNode(finalAst)) {
+        const next = reduceCurrencyAstOneLayer(finalAst, rates);
+        if (!next.changed) throw new Error("Unable to simplify post-conversion expression");
+        finalAst = next.node;
+        steps.push(formatCurrencyAst(finalAst));
+      }
+    } else {
+      steps.push(formatCurrencyAst(finalAst));
+    }
+  }
+
+  if (!isLiteralNode(finalAst)) throw new Error("Expression did not simplify to a single value");
+
+  const resultCurrency = finalAst.kind === "money" ? finalAst.currency : null;
+  return {
+    isCurrencyExpression: true,
+    currency: resultCurrency,
+    steps,
+    result: {
+      mean: finalAst.value,
+      min: finalAst.value,
+      max: finalAst.value,
+      samples: null,
+      currency: resultCurrency,
+      display: finalAst.kind === "money" ? `${formatCurrencyAmount(finalAst.value, true)}${resultCurrency}` : formatNumber(finalAst.value),
+    },
+  };
+}
+
+function evaluateExpressionWithSteps(expression, sampleCount = DEFAULT_SAMPLES, options = {}) {
+  const currencyResult = evaluateCurrencyExpressionWithSteps(expression, options);
+  if (currencyResult) return currencyResult;
+
+  const result = evaluateExpression(expression, sampleCount);
+  return {
+    isCurrencyExpression: false,
+    currency: null,
+    steps: [],
+    result,
+  };
+}
+
 // Return 5th and 95th percentiles from sample array, ignoring NaN/Inf
 function getQuantiles(samples) {
   if (!Array.isArray(samples) || samples.length === 0) return { p05: NaN, p95: NaN };
@@ -435,6 +1065,8 @@ const core = {
   shuntingYard,
   evalRpn,
   evaluateExpression,
+  evaluateExpressionWithSteps,
+  evaluateCurrencyExpressionWithSteps,
   getQuantiles,
   formatNumber,
   generateTextHistogram,

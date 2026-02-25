@@ -7,7 +7,7 @@ dev:
 
 .PHONY: test
 test:
-	node --test core/tests
+	node --test core/tests/*.test.js
 
 .PHONY: dev_ray
 dev_ray:
