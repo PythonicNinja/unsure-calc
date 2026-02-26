@@ -293,6 +293,7 @@ function setupBrowserHandlers() {
                 if (evaluation.isCurrencyExpression) {
                     const displayValue = result.display ??
                         `${formatNumber(result.mean)}${evaluation.currency ? evaluation.currency : ""}`;
+                    const currencySuffix = evaluation.currency ? evaluation.currency : "";
 
                     if (isNaN(result.mean)) {
                         summaryHtml += `<div><span class="text-red-600">Currency Result Contains NaN</span></div>`;
@@ -306,7 +307,21 @@ function setupBrowserHandlers() {
                         summaryHtml += `<div class="mt-2">Steps:</div>`;
                         summaryHtml += `<div class="mt-1 text-sm">${stepsHtml}</div>`;
                     }
-                    resultHistogramDisplay.innerHTML = "";
+
+                    if (result.samples) {
+                        const quantiles = getQuantiles(result.samples);
+                        if (isNaN(quantiles.p05) || isNaN(quantiles.p95)) {
+                            summaryHtml += `<div><span class="text-red-600">Simulated Result Contains NaN/Infinity</span></div>`;
+                            hasError = true;
+                        } else {
+                            summaryHtml += `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)}${currencySuffix} ~ ${formatNumber(quantiles.p95)}${currencySuffix}</div>`;
+                        }
+
+                        const histogramLines = generateTextHistogram(result.samples);
+                        resultHistogramDisplay.innerHTML = histogramLines.join("<br>");
+                    } else {
+                        resultHistogramDisplay.innerHTML = "";
+                    }
                 } else {
                     if (isNaN(result.mean) || isNaN(result.min) || isNaN(result.max)) {
                         summaryHtml += `<div><span class="text-red-600">Exact Result Contains NaN</span></div>`;

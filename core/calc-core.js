@@ -547,6 +547,23 @@ function parseCurrencyExpressionTokens(tokens, options = {}) {
       consume();
       const node = parseExpressionNode();
       if (!matchOperator(")")) throw new Error("Mismatched parentheses in expression");
+      const next = peek();
+      if (
+        allowCurrencySuffix &&
+        next &&
+        next.type === "identifier" &&
+        next.value !== BASE_CURRENCY_TOKEN
+      ) {
+        consume();
+        // Support grouped scalar expressions followed by a currency suffix, e.g. (60~115)pln.
+        // This is equivalent to multiplying the grouped value by a 1-unit currency literal.
+        return {
+          type: "binary",
+          operator: "*",
+          left: node,
+          right: createMoneyLiteral(1, next.value),
+        };
+      }
       return node;
     }
 
@@ -740,6 +757,249 @@ function evaluateCurrencyBinary(node, rates) {
   throw new Error(`Unsupported operator '${op}'`);
 }
 
+function createCurrencyValue(kind, mean, min, max, samples = null, currency = null) {
+  if (kind === "money") {
+    return { kind, currency, mean, min, max, samples };
+  }
+  return { kind, mean, min, max, samples };
+}
+
+function cloneCurrencyValue(value) {
+  return createCurrencyValue(
+    value.kind,
+    value.mean,
+    value.min,
+    value.max,
+    Array.isArray(value.samples) ? [...value.samples] : null,
+    value.kind === "money" ? value.currency : null,
+  );
+}
+
+function createCurrencyValueFromLiteral(literal) {
+  if (literal.kind === "money") {
+    return createCurrencyValue("money", literal.value, literal.value, literal.value, null, literal.currency);
+  }
+  return createCurrencyValue("scalar", literal.value, literal.value, literal.value);
+}
+
+function convertCurrencyValue(value, targetCurrency, rates) {
+  if (value.kind !== "money") throw new Error(`Cannot convert scalar value to ${targetCurrency}`);
+  const target = targetCurrency.toLowerCase();
+  if (value.currency === target) return cloneCurrencyValue(value);
+
+  const rate = getCurrencyRate(value.currency, target, rates);
+  const convertAmount = (amount) => roundCurrencyValue(amount * rate);
+  const convertedMin = convertAmount(value.min);
+  const convertedMax = convertAmount(value.max);
+
+  return createCurrencyValue(
+    "money",
+    convertAmount(value.mean),
+    Math.min(convertedMin, convertedMax),
+    Math.max(convertedMin, convertedMax),
+    Array.isArray(value.samples) ? value.samples.map(convertAmount) : null,
+    target,
+  );
+}
+
+function getMulBounds(aMin, aMax, bMin, bMax) {
+  const products = [aMin * bMin, aMin * bMax, aMax * bMin, aMax * bMax];
+  return { min: Math.min(...products), max: Math.max(...products) };
+}
+
+function getPowBounds(aMin, aMax, bMin, bMax) {
+  const powers = [aMin ** bMin, aMin ** bMax, aMax ** bMin, aMax ** bMax];
+  return { min: Math.min(...powers), max: Math.max(...powers) };
+}
+
+function getDivBounds(aMin, aMax, bMin, bMax) {
+  if (bMin <= 0 && bMax >= 0) {
+    if (bMin === 0 && bMax === 0) return { min: NaN, max: NaN };
+    if (aMin === 0 && aMax === 0) return { min: 0, max: 0 };
+    return { min: -Infinity, max: Infinity };
+  }
+  const quotients = [aMin / bMin, aMin / bMax, aMax / bMin, aMax / bMax];
+  return { min: Math.min(...quotients), max: Math.max(...quotients) };
+}
+
+function evaluateCurrencyBinaryWithUncertainty(operator, left, right, rates, sampleCount) {
+  if (operator === "~") {
+    if (left.kind !== "scalar" || right.kind !== "scalar") {
+      throw new Error("Range operator '~' supports scalar values only");
+    }
+    if (left.samples !== null || right.samples !== null) {
+      throw new Error("Operands for '~' must be exact scalar values");
+    }
+    const a = left.mean;
+    const b = right.mean;
+    const mean = (a + b) / 2;
+    const stdDev = Math.abs(b - a) / 3.28970725;
+    return createCurrencyValue(
+      "scalar",
+      mean,
+      Math.min(a, b),
+      Math.max(a, b),
+      generateSamples(mean, stdDev, sampleCount),
+    );
+  }
+
+  if (operator === "+" || operator === "-") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      const mean = operator === "+" ? left.mean + right.mean : left.mean - right.mean;
+      const min = operator === "+" ? left.min + right.min : left.min - right.max;
+      const max = operator === "+" ? left.max + right.max : left.max - right.min;
+      const samples = operateSamples(left.samples ?? left.mean, right.samples ?? right.mean, operator, sampleCount);
+      return createCurrencyValue("scalar", mean, min, max, samples);
+    }
+
+    if (left.kind === "money" && right.kind === "money") {
+      const rightInLeftCurrency =
+        right.currency === left.currency ? right : convertCurrencyValue(right, left.currency, rates);
+      const meanRaw = operator === "+" ? left.mean + rightInLeftCurrency.mean : left.mean - rightInLeftCurrency.mean;
+      const minRaw = operator === "+" ? left.min + rightInLeftCurrency.min : left.min - rightInLeftCurrency.max;
+      const maxRaw = operator === "+" ? left.max + rightInLeftCurrency.max : left.max - rightInLeftCurrency.min;
+      const samples = operateSamples(
+        left.samples ?? left.mean,
+        rightInLeftCurrency.samples ?? rightInLeftCurrency.mean,
+        operator,
+        sampleCount,
+      );
+
+      return createCurrencyValue(
+        "money",
+        roundCurrencyValue(meanRaw),
+        roundCurrencyValue(Math.min(minRaw, maxRaw)),
+        roundCurrencyValue(Math.max(minRaw, maxRaw)),
+        Array.isArray(samples) ? samples.map(roundCurrencyValue) : null,
+        left.currency,
+      );
+    }
+
+    throw new Error(`Cannot ${operator === "+" ? "add" : "subtract"} scalar and currency values`);
+  }
+
+  if (operator === "*") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      const bounds = getMulBounds(left.min, left.max, right.min, right.max);
+      const samples = operateSamples(left.samples ?? left.mean, right.samples ?? right.mean, operator, sampleCount);
+      return createCurrencyValue("scalar", left.mean * right.mean, bounds.min, bounds.max, samples);
+    }
+
+    if ((left.kind === "money" && right.kind === "scalar") || (left.kind === "scalar" && right.kind === "money")) {
+      const money = left.kind === "money" ? left : right;
+      const scalar = left.kind === "scalar" ? left : right;
+      const bounds = getMulBounds(money.min, money.max, scalar.min, scalar.max);
+      const samples = operateSamples(money.samples ?? money.mean, scalar.samples ?? scalar.mean, operator, sampleCount);
+      return createCurrencyValue(
+        "money",
+        roundCurrencyValue(money.mean * scalar.mean),
+        roundCurrencyValue(bounds.min),
+        roundCurrencyValue(bounds.max),
+        Array.isArray(samples) ? samples.map(roundCurrencyValue) : null,
+        money.currency,
+      );
+    }
+
+    throw new Error("Multiplying two currency values is not supported");
+  }
+
+  if (operator === "/") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      const bounds = getDivBounds(left.min, left.max, right.min, right.max);
+      const mean = right.mean === 0 ? NaN : left.mean / right.mean;
+      const samples = operateSamples(left.samples ?? left.mean, right.samples ?? right.mean, operator, sampleCount);
+      return createCurrencyValue("scalar", mean, bounds.min, bounds.max, samples);
+    }
+
+    if (left.kind === "money" && right.kind === "scalar") {
+      const bounds = getDivBounds(left.min, left.max, right.min, right.max);
+      const mean = roundCurrencyValue(right.mean === 0 ? NaN : left.mean / right.mean);
+      const samples = operateSamples(left.samples ?? left.mean, right.samples ?? right.mean, operator, sampleCount);
+      return createCurrencyValue(
+        "money",
+        mean,
+        roundCurrencyValue(bounds.min),
+        roundCurrencyValue(bounds.max),
+        Array.isArray(samples) ? samples.map(roundCurrencyValue) : null,
+        left.currency,
+      );
+    }
+
+    if (left.kind === "money" && right.kind === "money") {
+      const bounds = getDivBounds(left.min, left.max, right.min, right.max);
+      const mean = right.mean === 0 ? NaN : left.mean / right.mean;
+      const samples = operateSamples(left.samples ?? left.mean, right.samples ?? right.mean, operator, sampleCount);
+      return createCurrencyValue("scalar", mean, bounds.min, bounds.max, samples);
+    }
+
+    throw new Error("Cannot divide scalar by a currency value");
+  }
+
+  if (operator === "^") {
+    if (left.kind === "scalar" && right.kind === "scalar") {
+      const bounds = getPowBounds(left.min, left.max, right.min, right.max);
+      const samples = operateSamples(left.samples ?? left.mean, right.samples ?? right.mean, operator, sampleCount);
+      return createCurrencyValue("scalar", Math.pow(left.mean, right.mean), bounds.min, bounds.max, samples);
+    }
+
+    if (left.kind === "money" && right.kind === "scalar") {
+      const bounds = getPowBounds(left.min, left.max, right.min, right.max);
+      const samples = operateSamples(left.samples ?? left.mean, right.samples ?? right.mean, operator, sampleCount);
+      return createCurrencyValue(
+        "money",
+        roundCurrencyValue(Math.pow(left.mean, right.mean)),
+        roundCurrencyValue(bounds.min),
+        roundCurrencyValue(bounds.max),
+        Array.isArray(samples) ? samples.map(roundCurrencyValue) : null,
+        left.currency,
+      );
+    }
+
+    throw new Error("Power is supported for scalar^scalar or money^scalar only");
+  }
+
+  throw new Error(`Unsupported operator '${operator}'`);
+}
+
+function evaluateCurrencyAstWithUncertainty(node, rates, sampleCount, baseValue = null) {
+  if (isLiteralNode(node)) return createCurrencyValueFromLiteral(node);
+
+  if (node.type === "base") {
+    if (!baseValue) throw new Error("Base token was used without a replacement value");
+    return cloneCurrencyValue(baseValue);
+  }
+
+  if (node.type === "unary") {
+    if (node.operator !== "-") throw new Error(`Unsupported unary operator '${node.operator}'`);
+    const value = evaluateCurrencyAstWithUncertainty(node.value, rates, sampleCount, baseValue);
+    const min = Math.min(-value.max, -value.min);
+    const max = Math.max(-value.max, -value.min);
+    const mean = -value.mean;
+    const samples = Array.isArray(value.samples) ? value.samples.map((entry) => -entry) : null;
+
+    if (value.kind === "money") {
+      return createCurrencyValue(
+        "money",
+        roundCurrencyValue(mean),
+        roundCurrencyValue(min),
+        roundCurrencyValue(max),
+        Array.isArray(samples) ? samples.map(roundCurrencyValue) : null,
+        value.currency,
+      );
+    }
+
+    return createCurrencyValue("scalar", mean, min, max, samples);
+  }
+
+  if (node.type === "binary") {
+    const left = evaluateCurrencyAstWithUncertainty(node.left, rates, sampleCount, baseValue);
+    const right = evaluateCurrencyAstWithUncertainty(node.right, rates, sampleCount, baseValue);
+    return evaluateCurrencyBinaryWithUncertainty(node.operator, left, right, rates, sampleCount);
+  }
+
+  throw new Error(`Unsupported AST node type '${node.type}'`);
+}
+
 function reduceCurrencyAstOneLayer(node, rates) {
   if (isLiteralNode(node) || node.type === "base") {
     return { node, changed: false };
@@ -849,9 +1109,18 @@ function replaceBaseNode(node, replacement) {
   throw new Error(`Unsupported node for base replacement: ${node.type}`);
 }
 
-function evaluateCurrencyExpressionWithSteps(expression, options = {}) {
+function evaluateCurrencyExpressionWithSteps(expression, sampleCountOrOptions = DEFAULT_SAMPLES, maybeOptions = {}) {
+  let sampleCount = DEFAULT_SAMPLES;
+  let options = maybeOptions;
+  if (typeof sampleCountOrOptions === "number") {
+    sampleCount = sampleCountOrOptions;
+  } else {
+    options = sampleCountOrOptions || {};
+  }
+
   const tokens = lexCurrencyExpression(expression);
   const topLevelToIndex = findTopLevelToToken(tokens);
+  const hasRangeOperator = tokens.some((token) => token.type === "operator" && token.value === "~");
   const hasAdjacentCurrencySuffix = tokens.some(
     (token, idx) =>
       token.type === "number" &&
@@ -870,6 +1139,7 @@ function evaluateCurrencyExpressionWithSteps(expression, options = {}) {
 
   let targetCurrency = null;
   let tailTokens = [];
+  let tailAst = null;
   if (topLevelToIndex >= 0) {
     const targetToken = tokens[topLevelToIndex + 1];
     if (!targetToken || targetToken.type !== "identifier") {
@@ -877,6 +1147,16 @@ function evaluateCurrencyExpressionWithSteps(expression, options = {}) {
     }
     targetCurrency = targetToken.value;
     tailTokens = tokens.slice(topLevelToIndex + 2);
+    if (tailTokens.length > 0) {
+      const tailExpressionTokens = [
+        { type: "identifier", value: BASE_CURRENCY_TOKEN, raw: BASE_CURRENCY_TOKEN },
+        ...tailTokens,
+      ];
+      tailAst = parseCurrencyExpressionTokens(tailExpressionTokens, {
+        allowBaseToken: true,
+        allowCurrencySuffix: true,
+      });
+    }
   }
 
   const leftAst = parseCurrencyExpressionTokens(leftTokens, { allowBaseToken: false, allowCurrencySuffix: true });
@@ -901,15 +1181,7 @@ function evaluateCurrencyExpressionWithSteps(expression, options = {}) {
   if (targetCurrency) {
     finalAst = convertLiteralCurrency(finalAst, targetCurrency, rates);
 
-    if (tailTokens.length > 0) {
-      const tailExpressionTokens = [
-        { type: "identifier", value: BASE_CURRENCY_TOKEN, raw: BASE_CURRENCY_TOKEN },
-        ...tailTokens,
-      ];
-      const tailAst = parseCurrencyExpressionTokens(tailExpressionTokens, {
-        allowBaseToken: true,
-        allowCurrencySuffix: true,
-      });
+    if (tailAst) {
       finalAst = replaceBaseNode(tailAst, finalAst);
       steps.push(formatCurrencyAst(finalAst));
 
@@ -927,15 +1199,27 @@ function evaluateCurrencyExpressionWithSteps(expression, options = {}) {
   if (!isLiteralNode(finalAst)) throw new Error("Expression did not simplify to a single value");
 
   const resultCurrency = finalAst.kind === "money" ? finalAst.currency : null;
+  let sampledResult = null;
+  if (hasRangeOperator) {
+    sampledResult = evaluateCurrencyAstWithUncertainty(leftAst, rates, sampleCount);
+
+    if (targetCurrency) {
+      sampledResult = convertCurrencyValue(sampledResult, targetCurrency, rates);
+      if (tailAst) {
+        sampledResult = evaluateCurrencyAstWithUncertainty(tailAst, rates, sampleCount, sampledResult);
+      }
+    }
+  }
+
   return {
     isCurrencyExpression: true,
     currency: resultCurrency,
     steps,
     result: {
-      mean: finalAst.value,
-      min: finalAst.value,
-      max: finalAst.value,
-      samples: null,
+      mean: sampledResult ? sampledResult.mean : finalAst.value,
+      min: sampledResult ? sampledResult.min : finalAst.value,
+      max: sampledResult ? sampledResult.max : finalAst.value,
+      samples: sampledResult ? sampledResult.samples : null,
       currency: resultCurrency,
       display: finalAst.kind === "money" ? `${formatCurrencyAmount(finalAst.value, true)}${resultCurrency}` : formatNumber(finalAst.value),
     },
@@ -943,7 +1227,7 @@ function evaluateCurrencyExpressionWithSteps(expression, options = {}) {
 }
 
 function evaluateExpressionWithSteps(expression, sampleCount = DEFAULT_SAMPLES, options = {}) {
-  const currencyResult = evaluateCurrencyExpressionWithSteps(expression, options);
+  const currencyResult = evaluateCurrencyExpressionWithSteps(expression, sampleCount, options);
   if (currencyResult) return currencyResult;
 
   const result = evaluateExpression(expression, sampleCount);

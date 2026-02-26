@@ -37,6 +37,7 @@ export function evalRpn(rpnQueue: Token[], sampleCount?: number): UncertainValue
 export function evaluateExpression(expression: string, sampleCount?: number): UncertainValue | null;
 export function evaluateCurrencyExpressionWithSteps(
   expression: string,
+  sampleCountOrOptions?: number | { currencyRates?: Record<string, Record<string, number>> },
   options?: { currencyRates?: Record<string, Record<string, number>> },
 ): EvaluationWithSteps | null;
 export function evaluateExpressionWithSteps(
