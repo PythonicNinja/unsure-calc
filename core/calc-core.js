@@ -1128,8 +1128,19 @@ function evaluateCurrencyExpressionWithSteps(expression, sampleCountOrOptions = 
       tokens[idx + 1].type === "identifier" &&
       tokens[idx + 1].value !== BASE_CURRENCY_TOKEN,
   );
+  const hasGroupedCurrencySuffix = tokens.some(
+    (token, idx) =>
+      token.type === "operator" &&
+      token.value === ")" &&
+      tokens[idx + 1] &&
+      tokens[idx + 1].type === "identifier" &&
+      tokens[idx + 1].value !== BASE_CURRENCY_TOKEN,
+  );
   const looksLikeCurrencyExpression =
-    topLevelToIndex >= 0 || tokens.some((token) => token.type === "money") || hasAdjacentCurrencySuffix;
+    topLevelToIndex >= 0 ||
+    tokens.some((token) => token.type === "money") ||
+    hasAdjacentCurrencySuffix ||
+    hasGroupedCurrencySuffix;
 
   if (!looksLikeCurrencyExpression) return null;
 

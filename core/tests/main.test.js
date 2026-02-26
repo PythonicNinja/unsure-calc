@@ -138,3 +138,30 @@ test('Currency range samples produce quantiles bounded by sampled min and max', 
     assert.ok(quantiles.p05 <= quantiles.p95);
     assert.ok(quantiles.p95 <= sampleMax);
 });
+
+test('Grouped currency suffix without conversion is treated as currency expression', () => {
+    const evaluation = evaluateExpressionWithSteps('(1~5)pln', 128);
+
+    assert.strictEqual(evaluation.isCurrencyExpression, true);
+    assert.strictEqual(evaluation.currency, 'pln');
+    assert.strictEqual(evaluation.result.display, '3.00pln');
+    assert.ok(Array.isArray(evaluation.result.samples));
+    assert.strictEqual(evaluation.result.samples.length, 128);
+});
+
+test('Unary and currency subtraction with grouped currency suffix are supported', () => {
+    const unaryEvaluation = evaluateExpressionWithSteps('-(1~5)pln', 128);
+    const subtractionEvaluation = evaluateExpressionWithSteps('0pln-(1~5)pln', 128);
+
+    assert.strictEqual(unaryEvaluation.isCurrencyExpression, true);
+    assert.strictEqual(unaryEvaluation.currency, 'pln');
+    assert.strictEqual(unaryEvaluation.result.display, '-3.00pln');
+    assert.ok(Array.isArray(unaryEvaluation.result.samples));
+    assert.strictEqual(unaryEvaluation.result.samples.length, 128);
+
+    assert.strictEqual(subtractionEvaluation.isCurrencyExpression, true);
+    assert.strictEqual(subtractionEvaluation.currency, 'pln');
+    assert.strictEqual(subtractionEvaluation.result.display, '-3.00pln');
+    assert.ok(Array.isArray(subtractionEvaluation.result.samples));
+    assert.strictEqual(subtractionEvaluation.result.samples.length, 128);
+});
