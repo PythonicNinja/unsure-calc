@@ -23,7 +23,11 @@ const BIG_25_CURRENCIES = [
     "PLN", "CZK", "HUF", "RON", "TRY", "CNY", "HKD", "SGD", "KRW", "INR",
     "MXN", "BRL", "ZAR", "AED"
 ];
-const FX_ENDPOINT = `https://api.frankfurter.dev/v1/latest?base=EUR&symbols=${BIG_25_CURRENCIES.join(",")}`;
+const FX_SYMBOLS_QUERY = BIG_25_CURRENCIES.join(",");
+const FX_ENDPOINTS = [
+    `https://api.frankfurter.dev/v1/latest?base=EUR&symbols=${FX_SYMBOLS_QUERY}`,
+    `https://api.frankfurter.app/latest?base=EUR&symbols=${FX_SYMBOLS_QUERY}`,
+];
 const FALLBACK_BASE_RATES = { PLN: 4.22 };
 let fxLoadPromise = null;
 let fxState = null;
@@ -120,6 +124,40 @@ function normalizeBaseRates(rawRates) {
     return normalized;
 }
 
+function buildFxRequestUrl(endpoint, forceRefresh) {
+    if (!forceRefresh) return endpoint;
+    const separator = endpoint.includes("?") ? "&" : "?";
+    return `${endpoint}${separator}t=${Date.now()}`;
+}
+
+async function fetchLiveFxRates(today, forceRefresh = false) {
+    let lastError = null;
+
+    for (const endpoint of FX_ENDPOINTS) {
+        try {
+            const response = await fetch(buildFxRequestUrl(endpoint, forceRefresh), {
+                cache: forceRefresh ? "reload" : "no-store",
+            });
+            if (!response.ok) {
+                throw new Error(`${endpoint} HTTP ${response.status}`);
+            }
+
+            const payload = await response.json();
+            const normalizedRates = normalizeBaseRates(payload?.rates);
+            if (Object.keys(normalizedRates).length === 0) {
+                throw new Error(`${endpoint} invalid FX payload`);
+            }
+
+            const rateDate = typeof payload?.date === "string" ? payload.date : today;
+            return { source: "live", rates: normalizedRates, day: today, rateDate };
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    throw lastError || new Error("All FX endpoints failed");
+}
+
 function buildCurrencyRateOptions(baseRates) {
     const lowerRates = {};
     for (const [code, rate] of Object.entries(baseRates || {})) {
@@ -138,8 +176,9 @@ function isCurrencyLikeExpression(expression) {
     return /[a-z]/i.test(expression);
 }
 
-function renderRateStatus(rateStatusDisplay, state) {
+function renderRateStatus(rateStatusDisplay, state, options = {}) {
     if (!rateStatusDisplay || !state) return;
+    const onRefetch = typeof options.onRefetch === "function" ? options.onRefetch : null;
     const eurPln = state.rates?.PLN;
     const pairText = typeof eurPln === "number" ? `EUR/PLN ${eurPln.toFixed(4)}.` : "";
     const currencyCount = 1 + Object.keys(state.rates || {}).length;
@@ -150,19 +189,39 @@ function renderRateStatus(rateStatusDisplay, state) {
     }
     if (state.source === "cached") {
         rateStatusDisplay.textContent = `Top ${currencyCount} currencies cached ${state.rateDate}.`;
+        if (onRefetch) {
+            const refetchLink = document.createElement("a");
+            refetchLink.href = "#";
+            refetchLink.textContent = "Refetch";
+            refetchLink.className = "underline cursor-pointer";
+            refetchLink.addEventListener("click", (event) => {
+                event.preventDefault();
+                onRefetch();
+            });
+            rateStatusDisplay.appendChild(document.createTextNode(" "));
+            rateStatusDisplay.appendChild(refetchLink);
+        }
         return;
     }
     rateStatusDisplay.textContent = `${pairText} Live rates unavailable, using fallback snapshot.`;
 }
 
-async function loadDailyFxRateState() {
+async function loadDailyFxRateState(options = {}) {
+    const forceRefresh = options.forceRefresh === true;
     const today = getLocalDateStamp();
-    if (fxState && fxState.day === today) return fxState;
-    if (fxLoadPromise) return fxLoadPromise;
+    if (!forceRefresh && fxState && fxState.day === today) return fxState;
+    if (fxLoadPromise && !forceRefresh) return fxLoadPromise;
+    if (fxLoadPromise && forceRefresh) {
+        try {
+            await fxLoadPromise;
+        } catch (_error) {
+            // Ignore prior in-flight failure and force a new fetch below.
+        }
+    }
 
     fxLoadPromise = (async () => {
         const cached = readCachedFxData();
-        if (cached && cached.day === today) {
+        if (!forceRefresh && cached && cached.day === today) {
             fxState = {
                 source: "cached",
                 rates: cached.rates,
@@ -173,26 +232,15 @@ async function loadDailyFxRateState() {
         }
 
         try {
-            const response = await fetch(FX_ENDPOINT, { cache: "no-store" });
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-
-            const payload = await response.json();
-            const normalizedRates = normalizeBaseRates(payload?.rates);
-            if (Object.keys(normalizedRates).length === 0) {
-                throw new Error("Invalid FX payload");
-            }
-
-            const rateDate = typeof payload?.date === "string" ? payload.date : today;
+            const liveState = await fetchLiveFxRates(today, forceRefresh);
             const toCache = {
-                rates: normalizedRates,
+                rates: liveState.rates,
                 day: today,
-                rateDate,
+                rateDate: liveState.rateDate,
                 fetchedAt: new Date().toISOString(),
             };
             writeCachedFxData(toCache);
-            fxState = { source: "live", rates: normalizedRates, day: today, rateDate };
+            fxState = liveState;
             return fxState;
         } catch (error) {
             if (cached) {
@@ -244,6 +292,22 @@ function setupBrowserHandlers() {
         expressionInput.focus();
     }
 
+    function renderRateStatusWithRefetch(state) {
+        renderRateStatus(rateStatusDisplay, state, {
+            onRefetch: handleRefetchRates,
+        });
+    }
+
+    async function handleRefetchRates() {
+        if (!rateStatusDisplay) return;
+        rateStatusDisplay.textContent = "Refetching daily FX rates...";
+        const state = await loadDailyFxRateState({ forceRefresh: true });
+        renderRateStatusWithRefetch(state);
+        if (isCurrencyLikeExpression(expressionInput.value || "")) {
+            calculate();
+        }
+    }
+
     async function calculate() {
         const expression = expressionInput.value;
         resultSummaryDisplay.innerHTML = "<div>Calculating...</div>";
@@ -274,7 +338,7 @@ function setupBrowserHandlers() {
                 let evaluationOptions = {};
                 if (isCurrencyLikeExpression(expression)) {
                     const state = await loadDailyFxRateState();
-                    renderRateStatus(rateStatusDisplay, state);
+                    renderRateStatusWithRefetch(state);
                     evaluationOptions = buildCurrencyRateOptions(state.rates);
                 }
 
@@ -372,8 +436,8 @@ function setupBrowserHandlers() {
     }
 
     loadDailyFxRateState()
-        .then((state) => renderRateStatus(rateStatusDisplay, state))
-        .catch(() => renderRateStatus(rateStatusDisplay, {
+        .then((state) => renderRateStatusWithRefetch(state))
+        .catch(() => renderRateStatusWithRefetch({
             source: "fallback",
             rates: normalizeBaseRates(FALLBACK_BASE_RATES),
             rateDate: getLocalDateStamp(),
