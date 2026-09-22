@@ -4,199 +4,238 @@
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>unSure Calculator</title>
-
-        <!-- Performance: preconnect + defer loading for Tailwind CDN -->
-        <link rel="preconnect" href="https://cdn.tailwindcss.com" />
-        <link rel="preload" as="script" href="https://cdn.tailwindcss.com" />
-        <script src="https://cdn.tailwindcss.com" defer></script>
-
-        <!-- Performance: font preconnect + non-blocking load -->
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link
-            rel="preload"
-            as="style"
-            href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap"
+        <meta
+            name="description"
+            content="Probabilistic calculator: type ranges with ~ (7~10 * 17~23) or currency expressions (120usd + 50eur to pln) to get exact bounds, a simulated 5%-95% range and a histogram."
         />
+        <link rel="canonical" href="https://calc.pythonic.ninja/" />
         <link
-            rel="stylesheet"
-            href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap"
-            media="print"
-            onload="this.media='all'"
+            rel="icon"
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23e0b973'/%3E%3Ctext x='32' y='47' font-size='44' font-family='Georgia,serif' text-anchor='middle' fill='%233a2c13'%3E~%3C/text%3E%3C/svg%3E"
         />
-        <noscript>
-            <link
-                rel="stylesheet"
-                href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital,wght@0,400;1,400&family=Manrope:wght@400;600;700&display=swap"
-            />
-        </noscript>
+
+        <!-- Self-hosted fonts (OFL, see fonts/): preloaded so they land before first paint -->
+        <link rel="preload" as="font" type="font/woff2" crossorigin href="fonts/manrope-v20-latin.woff2" />
+        <link rel="preload" as="font" type="font/woff2" crossorigin href="fonts/dm-serif-display-v17-latin.woff2" />
+
+        <!-- Deferred but render-blocking: the first frame already contains the computed result (no pop-in, LCP = FCP) -->
+        <script src="core/calc-core.js" defer blocking="render"></script>
+        <script src="main.js" defer blocking="render"></script>
+
         <style>
-            body {
-                font-family: 'Manrope', 'Inter', 'system-ui', 'Segoe UI', Arial, sans-serif;
-                background: linear-gradient(135deg, #f7e7ce 0%, #fff6f0 100%);
-                letter-spacing: 0.01em;
+            @font-face {
+                font-family: "Manrope";
+                font-style: normal;
+                font-weight: 400 800;
+                font-display: swap;
+                src: url(fonts/manrope-v20-latin.woff2) format("woff2");
+                unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
             }
-            .ft-card {
-                background: linear-gradient(135deg, #fff6f0 60%, #f7e7ce 100%);
-                border: 2px solid #bfa36f;
-                border-radius: 18px;
-                box-shadow: 0 6px 32px 0 rgba(80, 60, 30, 0.10), 0 1.5px 6px 0 rgba(191, 163, 111, 0.12);
-                padding: 3.2rem 2.3rem 2.5rem 2.3rem;
-                max-width: 540px;
-                margin: 0 auto;
+            @font-face {
+                font-family: "DM Serif Display";
+                font-style: normal;
+                font-weight: 400;
+                font-display: swap;
+                src: url(fonts/dm-serif-display-v17-latin.woff2) format("woff2");
+                unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+            }
+            /* Metric-matched local fallbacks (fontTools-derived) so a late font swap does not move anything */
+            @font-face {
+                font-family: "Manrope Fallback";
+                src: local("Arial");
+                size-adjust: 100.576%;
+                ascent-override: 105.99%;
+                descent-override: 29.828%;
+                line-gap-override: 0%;
+            }
+            @font-face {
+                font-family: "DM Serif Display Fallback";
+                src: local("Georgia");
+                size-adjust: 101.266%;
+                ascent-override: 102.305%;
+                descent-override: 33.081%;
+                line-gap-override: 0%;
+            }
+
+            :root {
+                --gold: #bfa36f;
+                --gold-light: #e0b973;
+                --cream: #fff6f0;
+                --cream-dark: #f7e7ce;
+                --ink: #3a2c13;
+                --muted: #6b7280;
+                --error: #b91c1c;
+                --sans: "Manrope", "Manrope Fallback", Arial, sans-serif;
+                --serif: "DM Serif Display", "DM Serif Display Fallback", Georgia, serif;
+                --mono: "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+                --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            }
+
+            *, *::before, *::after { box-sizing: border-box; }
+            html { line-height: 1.5; -webkit-text-size-adjust: 100%; }
+            body, h1, p { margin: 0; }
+            a { color: inherit; }
+            button { background: none; border: 0; font: inherit; color: inherit; cursor: pointer; }
+            code {
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                font-size: 1em;
+            }
+
+            body {
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: flex-start;
+                padding: clamp(1rem, 6vh, 4rem) 1rem 1rem;
+                font-family: var(--sans);
+                color: #1f2937;
+                letter-spacing: 0.01em;
+                background: linear-gradient(135deg, var(--cream-dark) 0%, var(--cream) 100%);
+            }
+            .card {
+                width: 100%;
+                max-width: 56rem;
+                padding: 1rem;
+                background: #fff;
+                border-radius: 0.5rem;
+                box-shadow: var(--shadow-md);
             }
             h1 {
-                font-family: 'DM Serif Display', serif;
-                font-size: 2.7rem;
-                font-weight: 400;
-                color: #bfa36f;
-                margin-bottom: 2.3rem;
-                text-align: center;
-                letter-spacing: 0.01em;
-                text-shadow: 0 2px 8px #fff6f0, 0 1px 0 #bfa36f;
-            }
-            label {
-                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
-                font-size: 1.08rem;
-                color: #bfa36f;
+                font-family: var(--serif);
+                font-size: 1.875rem;
+                line-height: 2.25rem;
                 font-weight: 700;
-                margin-bottom: 0.7rem;
-                display: block;
-                letter-spacing: 0.01em;
+                color: #374151;
+                text-align: center;
+                letter-spacing: 0.025em;
+                text-shadow: 0 2px 8px var(--cream), 0 1px 0 var(--gold);
+                margin-bottom: 1.5rem;
+                cursor: pointer;
             }
-            input[type="text"] {
-                width: 100%;
+            .input-row {
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+                margin-bottom: 1.5rem;
+            }
+            #expression {
+                flex: 1 1 auto;
+                min-width: 0;
                 padding: 1.15rem 1.5rem;
-                border: 2px solid #bfa36f;
+                border: 2px solid var(--gold);
                 border-radius: 10px;
-                background: #fff6f0;
+                background: var(--cream);
+                font-family: var(--sans);
                 font-size: 1.18rem;
-                color: #3a2c13;
-                transition: border 0.22s, box-shadow 0.22s;
-                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
-                box-sizing: border-box;
+                line-height: 1.625;
+                font-weight: 500;
+                letter-spacing: 0.05em;
+                color: var(--ink);
                 box-shadow: 0 1.5px 6px 0 rgba(191, 163, 111, 0.08);
             }
-            input[type="text"]:focus {
+            #expression::placeholder { color: var(--muted); opacity: 1; }
+            #expression:focus {
                 outline: none;
-                border-color: #e0b973;
+                border-color: var(--gold-light);
                 box-shadow: 0 0 0 2px #f2e6d9, 0 1.5px 6px 0 #e0b97333;
             }
-            button {
-                width: 100%;
-                padding: 1.15rem 0;
-                background: linear-gradient(90deg, #bfa36f 70%, #e0b973 100%);
-                color: #fff6f0;
-                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
+            #calculateBtn {
+                flex: 0 0 50px;
+                padding: 1rem 0;
+                background: var(--gold-light);
+                color: var(--ink);
+                font-family: var(--sans);
                 font-weight: 700;
-                font-size: 1.22rem;
-                border: none;
-                border-radius: 10px;
-                cursor: pointer;
-                transition: background 0.18s, box-shadow 0.18s, color 0.18s;
-                box-shadow: 0 2px 16px 0 #bfa36f22, 0 1.5px 6px 0 #bfa36f33;
-                letter-spacing: 0.01em;
-                margin-bottom: 0.3rem;
+                font-size: 1.25rem;
+                line-height: 1.75rem;
+                border-radius: 10px 0.75rem 0.75rem 10px;
+                box-shadow: var(--shadow-md);
             }
-            button:hover, button:focus {
-                background: linear-gradient(90deg, #e0b973 0%, #bfa36f 100%);
-                color: #3a2c13;
-                box-shadow: 0 4px 24px 0 #bfa36f33, 0 2px 8px 0 #e0b97344;
+            #calculateBtn:hover { background: var(--gold); }
+            #calculateBtn:focus-visible { outline: 2px solid var(--gold-light); outline-offset: 2px; }
+
+            .hint {
+                margin-top: 0.5rem;
+                font-size: 0.75rem;
+                line-height: 1rem;
+                min-height: 1rem;
+                color: var(--muted);
+                text-align: center;
             }
-            #result-container {
-                font-family: 'JetBrains Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
-                background: linear-gradient(135deg, #fff6f0 80%, #f7e7ce 100%);
-                border: 2px solid #bfa36f;
-                border-radius: 10px;
-                padding: 1.5rem 1.2rem 1.2rem 1.2rem;
-                margin-top: 2.1rem;
+            .result + .hint { margin-top: 1rem; }
+            .hint a { color: #7f6127; text-decoration: underline; }
+            .hint a:hover { color: var(--gold); }
+
+            .result {
+                margin-top: 0;
+                padding: 1.5rem 1.2rem 1.2rem;
                 min-height: 4em;
                 overflow-x: auto;
-                color: #3a2c13;
+                border: 2px solid var(--gold);
+                border-radius: 10px;
+                background: linear-gradient(135deg, var(--cream) 80%, var(--cream-dark) 100%);
+                color: var(--ink);
+                font-family: var(--mono);
+                font-size: 0.875rem;
+                line-height: 1.625;
+                letter-spacing: 0.05em;
                 box-shadow: 0 2px 16px 0 #bfa36f1a, 0 1.5px 6px 0 #bfa36f22;
             }
-            .histogram-line {
-                display: flex;
-                align-items: baseline;
-            }
-            .histogram-label {
-                width: 8ch;
-                text-align: right;
-                padding-right: 0.5em;
-                flex-shrink: 0;
-                color: #6D7175;
-            }
-            .histogram-separator {
-                padding-right: 0.5em;
-                flex-shrink: 0;
-            }
-            .histogram-bar {
-                flex-grow: 1;
-                white-space: nowrap;
-                overflow: hidden;
-                color: #bfa36f;
-                border-radius: 3px;
-            }
+            .result.has-error { border-color: var(--error); }
+            .error { color: var(--error); }
+            .hidden { display: none; }
             #result-summary div {
+                font-family: var(--sans);
                 font-size: 1.11rem;
-                color: #3a2c13;
-                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
+                color: var(--ink);
             }
-            .text-xs {
-                color: #bfa36f;
-                text-align: center;
-                font-size: 0.97rem;
-                font-family: 'Manrope', 'Inter', 'system-ui', Arial, sans-serif;
+            .result-note { margin-top: 0.5rem; }
+            .steps { margin-top: 0.25rem; }
+
+            .sr-only {
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                padding: 0;
+                margin: -1px;
+                overflow: hidden;
+                clip: rect(0, 0, 0, 0);
+                white-space: nowrap;
+                border: 0;
             }
         </style>
     </head>
-    <body
-        class="bg-gray-100 text-gray-800 min-h-screen flex items-center justify-center p-4"
-    >
-        <div class="bg-white p-4 rounded-lg shadow-md w-full max-w-4xl">
-            <h1
-                class="text-3xl font-bold mb-6 text-center tracking-wide text-gray-700 cursor-pointer"
-            >
-                unSure Calculator
-            </h1>
+    <body>
+        <main class="card">
+            <h1>unSure Calculator</h1>
 
-            <div class="mb-6 flex items-center gap-3">
+            <div class="input-row">
+                <label for="expression" class="sr-only">Expression</label>
                 <input
                     type="text"
                     id="expression"
-                    placeholder="example: 7~10 * 17~23"
-                    class="flex-grow border-2 border-[#bfa36f] rounded-l-xl bg-[#fff6f0] text-lg leading-relaxed tracking-wider font-medium focus:outline-none focus:border-[#e0b973] focus:ring-2 focus:ring-[#e0b973] transition duration-150 ease-in-out shadow-sm"
+                    placeholder="example: 7 ~ 10 * 17~23 * 1~10eur to pln"
+                    aria-describedby="hints"
+                    autocomplete="off"
+                    spellcheck="false"
                 />
-                <button
-                    id="calculateBtn"
-                    class="px-4 py-4 bg-[#e0b973] hover:bg-[#bfa36f] text-[#3a2c13] font-bold text-xl rounded-r-xl focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#e0b973] transition duration-150 ease-in-out shadow-md"
-                    style="max-width: 50px"
-                >
-                    =
-                </button>
+                <button id="calculateBtn" type="button" aria-label="Calculate">=</button>
             </div>
 
-            <div class="mt-6">
-                <div
-                    id="result-container"
-                    class="bg-gray-50 p-4 rounded-md text-sm leading-relaxed tracking-wider border border-gray-200 min-h-[4em] overflow-x-auto hidden"
-                >
-                    <div id="result-summary"></div>
-                    <div id="result-histogram"></div>
-                </div>
+            <div id="result-container" class="result hidden">
+                <div id="result-summary"></div>
+                <div id="result-histogram"></div>
             </div>
-            <p class="text-xs text-gray-500 mt-4 text-center">
+
+            <p class="hint" id="hints">
                 Use '~' for ranges. Example: <code>4.1~4.3 * 10</code>
-                <br>
-                <span id="rate-status">Loading daily FX rates...</span>
-                Example: <code>120usd + 50eur to pln</code>
+                &middot; Currency: <code>120usd + 50eur to pln</code>
             </p>
-            <p class="text-xs text-gray-500 mt-3 text-center">
-                Source on <a href="https://github.com/PythonicNinja/unsure-calc" class="text-[#bfa36f] underline hover:text-[#e0b973]">GitHub</a>
+            <p class="hint" id="rate-status">Loading daily FX rates...</p>
+            <p class="hint">
+                Source on <a href="https://github.com/PythonicNinja/unsure-calc">GitHub</a>
             </p>
-        </div>
-
-        <script src="./core/calc-core.js"></script>
-        <script src="main.js" defer></script>
+            <noscript><p class="hint">This calculator needs JavaScript enabled.</p></noscript>
+        </main>
     </body>
 </html>

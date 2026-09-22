@@ -381,6 +381,32 @@ function cloneCurrencyNode(node) {
   throw new Error(`Unknown node type: ${node.type}`);
 }
 
+function isMoneyLiteral(node) {
+  return isLiteralNode(node) && node.kind === "money";
+}
+
+// A currency suffix on either range operand belongs to the whole range: 1~10eur == 10eur~20eur style == (1~10)eur.
+function resolveRangeCurrency(left, right) {
+  const leftCurrency = isMoneyLiteral(left) ? left.currency : null;
+  const rightCurrency = isMoneyLiteral(right) ? right.currency : null;
+  if (leftCurrency && rightCurrency && leftCurrency !== rightCurrency) {
+    throw new Error("Range operands must use the same currency");
+  }
+  return rightCurrency ?? leftCurrency;
+}
+
+function toScalarOperand(node) {
+  return isMoneyLiteral(node) ? createScalarLiteral(node.value) : node;
+}
+
+// Desugar `a ~ b<cur>` to `(a ~ b) * 1<cur>`, the same shape the grouped `(a~b)<cur>` form produces
+function createRangeNode(left, right) {
+  const currency = resolveRangeCurrency(left, right);
+  const range = { type: "binary", operator: "~", left: toScalarOperand(left), right: toScalarOperand(right) };
+  if (!currency) return range;
+  return { type: "binary", operator: "*", left: range, right: createMoneyLiteral(1, currency) };
+}
+
 function lexCurrencyExpression(input) {
   const tokens = [];
   let i = 0;
@@ -529,7 +555,7 @@ function parseCurrencyExpressionTokens(tokens, options = {}) {
   const parseRange = () => {
     let node = parseUnary();
     while (matchOperator("~")) {
-      node = { type: "binary", operator: "~", left: node, right: parseUnary() };
+      node = createRangeNode(node, parseUnary());
     }
     return node;
   };

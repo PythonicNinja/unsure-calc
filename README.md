@@ -10,6 +10,7 @@ It also supports currency expressions with step-by-step simplification, e.g.:
 
 Notes:
 - `to <currency>` converts the expression result to the target currency.
+- A currency suffix on a range applies to the whole range: `1~10eur` is the same as `(1~10)eur`, and `10eur~20eur` is a range in EUR.
 - Trailing arithmetic after conversion is supported (`to pln * 20 * 12`).
 - Web app fetches daily FX rates (once per local day) from Frankfurter/ECB for 25 major currencies (EUR base + 24 symbols).
 - Supported symbols in daily feed: `EUR, USD, GBP, JPY, CHF, CAD, AUD, NZD, SEK, NOK, DKK, PLN, CZK, HUF, RON, TRY, CNY, HKD, SGD, KRW, INR, MXN, BRL, ZAR, AED`.

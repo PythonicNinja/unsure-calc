@@ -158,6 +158,15 @@ async function fetchLiveFxRates(today, forceRefresh = false) {
     throw lastError || new Error("All FX endpoints failed");
 }
 
+// Best synchronous guess at today's rates: in-memory state, then today's localStorage cache, then the fallback snapshot
+function getProvisionalFxRates() {
+    const today = getLocalDateStamp();
+    if (fxState && fxState.day === today) return fxState.rates;
+    const cached = readCachedFxData();
+    if (cached && cached.day === today) return cached.rates;
+    return normalizeBaseRates(FALLBACK_BASE_RATES);
+}
+
 function buildCurrencyRateOptions(baseRates) {
     const lowerRates = {};
     for (const [code, rate] of Object.entries(baseRates || {})) {
@@ -193,7 +202,6 @@ function renderRateStatus(rateStatusDisplay, state, options = {}) {
             const refetchLink = document.createElement("a");
             refetchLink.href = "#";
             refetchLink.textContent = "Refetch";
-            refetchLink.className = "underline cursor-pointer";
             refetchLink.addEventListener("click", (event) => {
                 event.preventDefault();
                 onRefetch();
@@ -269,6 +277,84 @@ async function loadDailyFxRateState(options = {}) {
     return fxLoadPromise;
 }
 
+const EMPTY_VIEW = { summaryHtml: "Enter an expression to calculate.", histogramHtml: "", hasError: false };
+
+function errorLine(message) {
+    return `<div><span class="error">${message}</span></div>`;
+}
+
+function buildSamplesView(samples, suffix) {
+    const quantiles = getQuantiles(samples);
+    const hasError = isNaN(quantiles.p05) || isNaN(quantiles.p95);
+    const summaryHtml = hasError
+        ? errorLine("Simulated Result Contains NaN/Infinity")
+        : `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)}${suffix} ~ ${formatNumber(quantiles.p95)}${suffix}</div>`;
+    return { summaryHtml, histogramHtml: generateTextHistogram(samples).join("<br>"), hasError };
+}
+
+function buildCurrencyView(evaluation, result) {
+    const suffix = evaluation.currency ? evaluation.currency : "";
+    const displayValue = result.display ?? `${formatNumber(result.mean)}${suffix}`;
+    let hasError = isNaN(result.mean);
+    let summaryHtml = hasError
+        ? errorLine("Currency Result Contains NaN")
+        : `<div>Final Result: ${escapeHtml(displayValue)}</div>`;
+
+    const stepsHtml = renderStepsHtml(evaluation.steps);
+    if (stepsHtml) {
+        summaryHtml += `<div class="result-note">Steps:</div><div class="steps">${stepsHtml}</div>`;
+    }
+
+    let histogramHtml = "";
+    if (result.samples) {
+        const samplesView = buildSamplesView(result.samples, suffix);
+        summaryHtml += samplesView.summaryHtml;
+        histogramHtml = samplesView.histogramHtml;
+        hasError = hasError || samplesView.hasError;
+    }
+    return { summaryHtml, histogramHtml, hasError };
+}
+
+function buildRangeView(result) {
+    let hasError = isNaN(result.mean) || isNaN(result.min) || isNaN(result.max);
+    let summaryHtml = hasError
+        ? errorLine("Exact Result Contains NaN")
+        : `<div>Exact Average: ${formatNumber(result.mean)}</div><div>Exact Range : ${formatNumber(result.min)} - ${formatNumber(result.max)}</div>`;
+
+    let histogramHtml = "";
+    if (result.samples) {
+        const samplesView = buildSamplesView(result.samples, "");
+        summaryHtml += samplesView.summaryHtml;
+        histogramHtml = samplesView.histogramHtml;
+        hasError = hasError || samplesView.hasError;
+    } else {
+        summaryHtml += `<div class="result-note">Result is an exact number, no distribution to simulate</div>`;
+    }
+    return { summaryHtml, histogramHtml, hasError };
+}
+
+// Pure: expression -> {summaryHtml, histogramHtml, hasError}; never throws
+function evaluateView(expression, evaluationOptions) {
+    if (!expression.trim()) return EMPTY_VIEW;
+    try {
+        const evaluation = evaluateExpressionWithSteps(expression, undefined, evaluationOptions);
+        const result = evaluation?.result;
+        if (!result) return { summaryHtml: "", histogramHtml: "", hasError: false };
+        return evaluation.isCurrencyExpression ? buildCurrencyView(evaluation, result) : buildRangeView(result);
+    } catch (error) {
+        console.error("Calculation Error:", error);
+        return { summaryHtml: errorLine(`Error: ${escapeHtml(error.message)}`), histogramHtml: "", hasError: true };
+    }
+}
+
+function pushExpressionToUrl(expression) {
+    const params = new URLSearchParams(window.location.search);
+    params.delete("expr");
+    const rest = params.toString();
+    const encodedExpression = encodeURIComponent(expression);
+    window.history.pushState(null, "", rest ? `?${rest}&expr=${encodedExpression}` : `?expr=${encodedExpression}`);
+}
+
 function setupBrowserHandlers() {
     const expressionInput = document.getElementById("expression");
     const calculateBtn = document.getElementById("calculateBtn");
@@ -308,121 +394,31 @@ function setupBrowserHandlers() {
         }
     }
 
+    function renderEvaluation(expression, evaluationOptions, { skipIfError = false } = {}) {
+        const view = evaluateView(expression, evaluationOptions);
+        if (skipIfError && view.hasError) return;
+        resultSummaryDisplay.innerHTML = view.summaryHtml;
+        resultHistogramDisplay.innerHTML = view.histogramHtml;
+        resultContainer.classList.toggle("has-error", view.hasError);
+        resultContainer.classList.remove("hidden");
+    }
+
+    // Non-currency expressions render synchronously (before the first paint on initial load)
     async function calculate() {
         const expression = expressionInput.value;
-        resultSummaryDisplay.innerHTML = "<div>Calculating...</div>";
-        resultHistogramDisplay.innerHTML = "";
-        resultContainer.style.visibility = "hidden";
-        resultContainer.classList.remove("hidden");
-        resultContainer.classList.remove("border-red-600");
-        resultSummaryDisplay.classList.remove("text-red-600");
+        if (expression) pushExpressionToUrl(expression);
 
-        if (expression) {
-            const params = new URLSearchParams(window.location.search);
-            params.delete("expr");
-            const encodedExpression = encodeURIComponent(expression);
-            const rest = params.toString();
-            const query = rest ? `?${rest}&expr=${encodedExpression}` : `?expr=${encodedExpression}`;
-            window.history.pushState(null, "", query);
+        if (!isCurrencyLikeExpression(expression)) {
+            renderEvaluation(expression, {});
+            return;
         }
 
-        setTimeout(async () => {
-            try {
-                if (!expression.trim()) {
-                    resultSummaryDisplay.innerHTML = "Enter an expression to calculate.";
-                    resultHistogramDisplay.innerHTML = "";
-                    resultContainer.style.visibility = "visible";
-                    return;
-                }
-
-                let evaluationOptions = {};
-                if (isCurrencyLikeExpression(expression)) {
-                    const state = await loadDailyFxRateState();
-                    renderRateStatusWithRefetch(state);
-                    evaluationOptions = buildCurrencyRateOptions(state.rates);
-                }
-
-                const evaluation = evaluateExpressionWithSteps(expression, undefined, evaluationOptions);
-                const result = evaluation?.result;
-
-                if (!result) {
-                    resultSummaryDisplay.innerHTML = "";
-                    resultContainer.style.visibility = "visible";
-                    return;
-                }
-
-                let summaryHtml = "";
-                let hasError = false;
-
-                if (evaluation.isCurrencyExpression) {
-                    const displayValue = result.display ??
-                        `${formatNumber(result.mean)}${evaluation.currency ? evaluation.currency : ""}`;
-                    const currencySuffix = evaluation.currency ? evaluation.currency : "";
-
-                    if (isNaN(result.mean)) {
-                        summaryHtml += `<div><span class="text-red-600">Currency Result Contains NaN</span></div>`;
-                        hasError = true;
-                    } else {
-                        summaryHtml += `<div>Final Result: ${escapeHtml(displayValue)}</div>`;
-                    }
-
-                    const stepsHtml = renderStepsHtml(evaluation.steps);
-                    if (stepsHtml) {
-                        summaryHtml += `<div class="mt-2">Steps:</div>`;
-                        summaryHtml += `<div class="mt-1 text-sm">${stepsHtml}</div>`;
-                    }
-
-                    if (result.samples) {
-                        const quantiles = getQuantiles(result.samples);
-                        if (isNaN(quantiles.p05) || isNaN(quantiles.p95)) {
-                            summaryHtml += `<div><span class="text-red-600">Simulated Result Contains NaN/Infinity</span></div>`;
-                            hasError = true;
-                        } else {
-                            summaryHtml += `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)}${currencySuffix} ~ ${formatNumber(quantiles.p95)}${currencySuffix}</div>`;
-                        }
-
-                        const histogramLines = generateTextHistogram(result.samples);
-                        resultHistogramDisplay.innerHTML = histogramLines.join("<br>");
-                    } else {
-                        resultHistogramDisplay.innerHTML = "";
-                    }
-                } else {
-                    if (isNaN(result.mean) || isNaN(result.min) || isNaN(result.max)) {
-                        summaryHtml += `<div><span class="text-red-600">Exact Result Contains NaN</span></div>`;
-                        hasError = true;
-                    } else {
-                        summaryHtml += `<div>Exact Average: ${formatNumber(result.mean)}</div>`;
-                        summaryHtml += `<div>Exact Range : ${formatNumber(result.min)} - ${formatNumber(result.max)}</div>`;
-                    }
-
-                    if (result.samples) {
-                        const quantiles = getQuantiles(result.samples);
-                        if (isNaN(quantiles.p05) || isNaN(quantiles.p95)) {
-                            summaryHtml += `<div><span class="text-red-600">Simulated Result Contains NaN/Infinity</span></div>`;
-                            hasError = true;
-                        } else {
-                            summaryHtml += `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)} ~ ${formatNumber(quantiles.p95)}</div>`;
-                        }
-                        const histogramLines = generateTextHistogram(result.samples);
-                        resultHistogramDisplay.innerHTML = histogramLines.join("<br>");
-                    } else {
-                        resultHistogramDisplay.innerHTML = "";
-                        summaryHtml += `<div class="mt-2">Result is an exact number, no distribution to simulate</div>`;
-                    }
-                }
-
-                resultSummaryDisplay.innerHTML = summaryHtml;
-                if (hasError) {
-                    resultContainer.classList.add("border-red-600");
-                }
-            } catch (error) {
-                console.error("Calculation Error:", error);
-                resultSummaryDisplay.innerHTML = `<div><span class="text-red-600">Error: ${error.message}</span></div>`;
-                resultContainer.classList.add("border-red-600");
-                resultHistogramDisplay.innerHTML = "";
-            }
-            resultContainer.style.visibility = "visible";
-        }, 10);
+        // Provisional render with today's cached (or fallback) rates keeps the result box in the first frame;
+        // the live rates re-render the same layout, so nothing moves.
+        renderEvaluation(expression, buildCurrencyRateOptions(getProvisionalFxRates()), { skipIfError: true });
+        const state = await loadDailyFxRateState();
+        renderRateStatusWithRefetch(state);
+        renderEvaluation(expression, buildCurrencyRateOptions(state.rates));
     }
 
     calculateBtn.addEventListener("click", calculate);
@@ -432,7 +428,7 @@ function setupBrowserHandlers() {
     document.querySelector('h1')?.addEventListener('click', reset);
 
     if (!expressionInput.value) {
-        expressionInput.value = "7~10 * 17~23";
+        expressionInput.value = "7 ~ 10 * 17~23 * 1~10eur to pln";
     }
 
     loadDailyFxRateState()
@@ -456,8 +452,11 @@ function setupBrowserHandlers() {
     };
 }
 
-// Run in browser
-document.addEventListener("DOMContentLoaded", () => {
-  setupBrowserHandlers();
-});
+// Run in browser. Deferred scripts execute with the DOM parsed but before DOMContentLoaded;
+// rendering right away keeps the result inside the render-blocked first frame (see index.html).
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", setupBrowserHandlers);
+} else {
+    setupBrowserHandlers();
+}
 })();

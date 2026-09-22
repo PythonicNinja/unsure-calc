@@ -165,3 +165,37 @@ test('Unary and currency subtraction with grouped currency suffix are supported'
     assert.ok(Array.isArray(subtractionEvaluation.result.samples));
     assert.strictEqual(subtractionEvaluation.result.samples.length, 128);
 });
+
+test('Currency suffix on the right range operand applies to the whole range (1~10eur == (1~10)eur)', () => {
+    const evaluation = evaluateExpressionWithSteps('1~10eur to pln', 128);
+    const grouped = evaluateExpressionWithSteps('(1~10)eur to pln', 128);
+
+    assert.strictEqual(evaluation.isCurrencyExpression, true);
+    assert.strictEqual(evaluation.currency, 'pln');
+    assert.strictEqual(evaluation.result.display, grouped.result.display);
+    assert.strictEqual(evaluation.result.display, '23.21pln');
+    assert.deepStrictEqual(evaluation.steps, grouped.steps);
+    assert.strictEqual(evaluation.result.samples.length, 128);
+});
+
+test('Range with currency suffix works inside a longer product chain', () => {
+    const evaluation = evaluateExpressionWithSteps('7 ~ 10 * 17~23 * 1~10eur to pln', 128);
+
+    assert.strictEqual(evaluation.currency, 'pln');
+    assert.strictEqual(evaluation.result.display, '3945.70pln');
+    assert.strictEqual(evaluation.steps[0], '7 ~ 10 * 17 ~ 23 * 1 ~ 10 * 1eur to pln');
+});
+
+test('Range between two amounts in the same currency is a range in that currency', () => {
+    const evaluation = evaluateExpressionWithSteps('10eur~20eur to pln', 128);
+
+    assert.strictEqual(evaluation.currency, 'pln');
+    assert.strictEqual(evaluation.result.display, '63.30pln');
+});
+
+test('Range between amounts in different currencies is rejected', () => {
+    assert.throws(
+        () => evaluateExpressionWithSteps('10eur~20usd to pln', 128),
+        /same currency/i,
+    );
+});

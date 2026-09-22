@@ -1,0 +1,5 @@
+# Headers only — build/publish settings stay in the Netlify UI.
+[[headers]]
+  for = "/fonts/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
