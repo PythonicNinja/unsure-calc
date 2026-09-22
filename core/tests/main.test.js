@@ -1,6 +1,14 @@
 const test = require('node:test');
 const assert = require('assert');
-const { tokenize, shuntingYard, evaluateExpression, evaluateExpressionWithSteps, getQuantiles } = require('../calc-core');
+const {
+    tokenize,
+    shuntingYard,
+    evaluateExpression,
+    evaluateExpressionWithSteps,
+    getQuantiles,
+    generateTextHistogram,
+    computeHistogramBins,
+} = require('../calc-core');
 
 test('Tokenizer keeps minus separate from number', () => {
     const tokens = tokenize('1-2');
@@ -198,4 +206,37 @@ test('Range between amounts in different currencies is rejected', () => {
         () => evaluateExpressionWithSteps('10eur~20usd to pln', 128),
         /same currency/i,
     );
+});
+
+test('Text histogram keeps its line format (label | bar, mean annotation on the mean bin)', () => {
+    const lines = generateTextHistogram([1, 2, 3, 4], { bins: 2, width: 4 });
+    assert.deepStrictEqual(lines, [' 2.5000 | ████ (mean≈2.5000)', ' 1.0000 | ████']);
+});
+
+test('computeHistogramBins returns ascending bins with counts, max count and mean bin', () => {
+    const histogram = computeHistogramBins([1, 2, 3, 4], { bins: 2 });
+    assert.deepStrictEqual(
+        histogram.bins.map(({ start, end, count }) => ({ start, end, count })),
+        [{ start: 1, end: 2.5, count: 2 }, { start: 2.5, end: 4, count: 2 }],
+    );
+    assert.strictEqual(histogram.maxCount, 2);
+    assert.strictEqual(histogram.sampleMean, 2.5);
+    assert.strictEqual(histogram.meanBinIndex, 1);
+    assert.strictEqual(histogram.sampleCount, 4);
+});
+
+test('computeHistogramBins can trim outliers by quantile', () => {
+    const samples = [-1000, 1000];
+    for (let i = 1; i <= 100; i++) samples.push(i);
+    const histogram = computeHistogramBins(samples, { bins: 4, trim: 0.02 });
+    assert.strictEqual(histogram.minVal, 2);
+    assert.strictEqual(histogram.maxVal, 99);
+    assert.strictEqual(histogram.sampleCount, 98);
+    assert.strictEqual(histogram.bins.reduce((sum, bin) => sum + bin.count, 0), 98);
+});
+
+test('computeHistogramBins returns null without usable samples', () => {
+    assert.strictEqual(computeHistogramBins([]), null);
+    assert.strictEqual(computeHistogramBins([NaN, Infinity]), null);
+    assert.strictEqual(computeHistogramBins(null), null);
 });

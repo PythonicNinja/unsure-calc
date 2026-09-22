@@ -1324,54 +1324,70 @@ function calculateSampleMean(samples) {
   return sum / validSamples.length;
 }
 
-// Build text lines for a simple histogram of sample distribution
-function generateTextHistogram(samples, options = {}) {
+// Value at quantile q (0..1) of an ascending-sorted array
+function quantileOfSorted(sorted, q) {
+  const index = Math.round(q * (sorted.length - 1));
+  return sorted[Math.min(sorted.length - 1, Math.max(0, index))];
+}
+
+function clampBinIndex(value, minVal, binSize, numBins) {
+  const index = binSize === 0 ? 0 : Math.floor((value - minVal) / binSize);
+  return Math.min(numBins - 1, Math.max(0, index));
+}
+
+// Bucket valid samples into `bins` equal-width bins (ascending). `trim` drops the outer quantiles,
+// e.g. 0.01 bins only p01..p99 so a few outliers do not flatten the shape. Returns null without usable samples.
+function computeHistogramBins(samples, options = {}) {
   const numBins = options.bins ?? DEFAULT_BINS;
-  const maxBarWidth = options.width ?? DEFAULT_WIDTH;
-  const barChar = (options.barChar ?? DEFAULT_BAR).slice(0, 1) || DEFAULT_BAR;
-  const output = [];
-  if (!Array.isArray(samples) || samples.length === 0) return ["Histogram unavailable (no samples)."];
-
+  const trim = options.trim ?? 0;
+  if (!Array.isArray(samples)) return null;
   const validSamples = samples.filter((n) => !isNaN(n) && isFinite(n));
-  if (validSamples.length === 0) return ["Cannot generate histogram (no valid numeric samples)."];
+  if (validSamples.length === 0) return null;
 
-  const minVal = Math.min(...validSamples);
-  const maxVal = Math.max(...validSamples);
-  const sampleMean = calculateSampleMean(validSamples);
-
-  if (minVal === maxVal) {
-    const label = formatNumber(minVal, 7);
-    output.push(`${label} | ${barChar.repeat(maxBarWidth)} (all samples)`);
-    return output;
+  let minVal = Math.min(...validSamples);
+  let maxVal = Math.max(...validSamples);
+  if (trim > 0) {
+    const sorted = [...validSamples].sort((a, b) => a - b);
+    minVal = quantileOfSorted(sorted, trim);
+    maxVal = quantileOfSorted(sorted, 1 - trim);
   }
+  const binned = trim > 0 ? validSamples.filter((n) => n >= minVal && n <= maxVal) : validSamples;
 
   const binSize = (maxVal - minVal) / numBins;
-  const binCounts = Array(numBins).fill(0);
-  for (const sample of validSamples) {
-    let binIndex = binSize === 0 ? 0 : Math.floor((sample - minVal) / binSize);
-    if (binIndex >= numBins) binIndex = numBins - 1;
-    if (binIndex < 0) binIndex = 0;
-    binCounts[binIndex]++;
+  const counts = Array(numBins).fill(0);
+  for (const sample of binned) counts[clampBinIndex(sample, minVal, binSize, numBins)]++;
+
+  const sampleMean = calculateSampleMean(validSamples);
+  return {
+    bins: counts.map((count, i) => ({ start: minVal + i * binSize, end: minVal + (i + 1) * binSize, count })),
+    maxCount: Math.max(...counts),
+    meanBinIndex: clampBinIndex(sampleMean, minVal, binSize, numBins),
+    sampleMean,
+    sampleCount: binned.length,
+    minVal,
+    maxVal,
+  };
+}
+
+// Build text lines for a simple histogram of sample distribution
+function generateTextHistogram(samples, options = {}) {
+  const maxBarWidth = options.width ?? DEFAULT_WIDTH;
+  const barChar = (options.barChar ?? DEFAULT_BAR).slice(0, 1) || DEFAULT_BAR;
+  if (!Array.isArray(samples) || samples.length === 0) return ["Histogram unavailable (no samples)."];
+
+  const histogram = computeHistogramBins(samples, { bins: options.bins });
+  if (!histogram) return ["Cannot generate histogram (no valid numeric samples)."];
+  if (histogram.minVal === histogram.maxVal) {
+    return [`${formatNumber(histogram.minVal, 7)} | ${barChar.repeat(maxBarWidth)} (all samples)`];
   }
+  if (histogram.maxCount === 0) return ["Cannot generate histogram (counts are zero)."];
 
-  const maxCount = Math.max(...binCounts);
-  if (maxCount === 0) return ["Cannot generate histogram (counts are zero)."];
-
-  let meanBinIndex = binSize === 0 ? 0 : Math.floor((sampleMean - minVal) / binSize);
-  if (meanBinIndex >= numBins) meanBinIndex = numBins - 1;
-  if (meanBinIndex < 0) meanBinIndex = 0;
-
-  for (let i = numBins - 1; i >= 0; i--) {
-    const binStart = minVal + i * binSize;
-    const count = binCounts[i];
-    const barWidth = maxCount === 0 ? 0 : Math.round((count / maxCount) * maxBarWidth);
-    const bar = barChar.repeat(barWidth);
-    const label = formatNumber(binStart, 7);
-
-    let line = `${label} | ${bar}`;
-    if (i === meanBinIndex) {
-      line += ` (mean≈${formatNumber(sampleMean)})`;
-    }
+  const output = [];
+  for (let i = histogram.bins.length - 1; i >= 0; i--) {
+    const { start, count } = histogram.bins[i];
+    const bar = barChar.repeat(Math.round((count / histogram.maxCount) * maxBarWidth));
+    let line = `${formatNumber(start, 7)} | ${bar}`;
+    if (i === histogram.meanBinIndex) line += ` (mean≈${formatNumber(histogram.sampleMean)})`;
     output.push(line);
   }
   return output;
@@ -1391,6 +1407,7 @@ const core = {
   getQuantiles,
   formatNumber,
   generateTextHistogram,
+  computeHistogramBins,
 };
 
 if (typeof module !== "undefined" && module.exports) {

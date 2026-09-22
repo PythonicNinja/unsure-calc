@@ -14,7 +14,7 @@ const {
     evaluateExpressionWithSteps,
     getQuantiles,
     formatNumber,
-    generateTextHistogram
+    computeHistogramBins
 } = calcCoreLib;
 
 const FX_CACHE_KEY = "unsureCalcFx.v1";
@@ -283,13 +283,38 @@ function errorLine(message) {
     return `<div><span class="error">${message}</span></div>`;
 }
 
+const HISTOGRAM_TRIM = 0.01; // bins cover the 1st..99th percentile so outliers do not flatten the shape
+
+function buildHistogramRow(bin, histogram, isMean) {
+    const width = ((bin.count / histogram.maxCount) * 100).toFixed(2);
+    const meanNote = isMean ? `, mean \u2248 ${formatNumber(histogram.sampleMean)}` : "";
+    const title = `${formatNumber(bin.start)} \u2013 ${formatNumber(bin.end)}: ${bin.count} samples${meanNote}`;
+    return `<div class="histogram-row${isMean ? " is-mean" : ""}" title="${title}">` +
+        `<span class="histogram-label">${formatNumber(bin.start)}</span>` +
+        `<span class="histogram-track"><span class="histogram-bar" style="width:${width}%"></span></span>` +
+        `</div>`;
+}
+
+// Responsive CSS-bar histogram (highest bin first); the text version stays in calc-core for CLI use
+function buildHistogramHtml(samples) {
+    const histogram = computeHistogramBins(samples, { trim: HISTOGRAM_TRIM });
+    if (!histogram || histogram.maxCount === 0) return "";
+    const rows = [];
+    for (let i = histogram.bins.length - 1; i >= 0; i--) {
+        rows.push(buildHistogramRow(histogram.bins[i], histogram, i === histogram.meanBinIndex));
+    }
+    const caption = `mean \u2248 ${formatNumber(histogram.sampleMean)} \u00b7 bins span the 1st\u201399th percentile of ${histogram.sampleCount} samples`;
+    return `<div class="histogram" role="img" aria-label="Histogram of simulated results, ${caption}">${rows.join("")}</div>` +
+        `<div class="histogram-caption">${caption}</div>`;
+}
+
 function buildSamplesView(samples, suffix) {
     const quantiles = getQuantiles(samples);
     const hasError = isNaN(quantiles.p05) || isNaN(quantiles.p95);
     const summaryHtml = hasError
         ? errorLine("Simulated Result Contains NaN/Infinity")
         : `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)}${suffix} ~ ${formatNumber(quantiles.p95)}${suffix}</div>`;
-    return { summaryHtml, histogramHtml: generateTextHistogram(samples).join("<br>"), hasError };
+    return { summaryHtml, histogramHtml: buildHistogramHtml(samples), hasError };
 }
 
 function buildCurrencyView(evaluation, result) {

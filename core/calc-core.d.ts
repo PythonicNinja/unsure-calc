@@ -26,6 +26,17 @@ export type HistogramOptions = {
   barChar?: string;
 };
 
+export type HistogramBin = { start: number; end: number; count: number };
+export type Histogram = {
+  bins: HistogramBin[];
+  maxCount: number;
+  meanBinIndex: number;
+  sampleMean: number;
+  sampleCount: number;
+  minVal: number;
+  maxVal: number;
+};
+
 export const DEFAULT_SAMPLES: number;
 export const DEFAULT_BINS: number;
 export const DEFAULT_WIDTH: number;
@@ -48,3 +59,7 @@ export function evaluateExpressionWithSteps(
 export function getQuantiles(samples: number[] | null): Quantiles;
 export function formatNumber(num: number, padWidth?: number): string;
 export function generateTextHistogram(samples: number[] | null, options?: HistogramOptions): string[];
+export function computeHistogramBins(
+  samples: number[] | null,
+  options?: { bins?: number; trim?: number },
+): Histogram | null;

@@ -190,6 +190,46 @@
                 color: var(--ink);
             }
             .result-note { margin-top: 0.5rem; }
+
+            .histogram {
+                display: grid;
+                row-gap: 3px;
+                margin-top: 0.75rem;
+            }
+            .histogram-row {
+                display: flex;
+                align-items: center;
+                gap: 0.6em;
+                line-height: 1;
+            }
+            .histogram-label {
+                flex: 0 0 6.5em;
+                font-size: 0.8em;
+                text-align: right;
+                white-space: nowrap;
+                font-variant-numeric: tabular-nums;
+                color: #5b574f;
+            }
+            .histogram-track {
+                flex: 1 1 auto;
+                height: 0.85em;
+                border-radius: 3px;
+                background: rgba(191, 163, 111, 0.14);
+                overflow: hidden;
+            }
+            .histogram-bar {
+                display: block;
+                height: 100%;
+                border-radius: 3px;
+                background: linear-gradient(90deg, var(--gold) 0%, var(--gold-light) 100%);
+            }
+            .histogram-row.is-mean .histogram-bar { background: var(--ink); }
+            .histogram-row.is-mean .histogram-label { color: var(--ink); font-weight: 700; }
+            .histogram-caption {
+                margin-top: 0.5rem;
+                font-size: 0.8em;
+                color: #5b574f;
+            }
             .steps { margin-top: 0.25rem; }
 
             .sr-only {
