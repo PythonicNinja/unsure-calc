@@ -33,6 +33,8 @@ export type Histogram = {
   meanBinIndex: number;
   sampleMean: number;
   sampleCount: number;
+  validCount: number;
+  belowCount: number;
   minVal: number;
   maxVal: number;
 };
@@ -41,6 +43,7 @@ export const DEFAULT_SAMPLES: number;
 export const DEFAULT_BINS: number;
 export const DEFAULT_WIDTH: number;
 export const DEFAULT_BAR: string;
+export const DEFAULT_SEED: number;
 
 export function tokenize(s: string): Token[];
 export function shuntingYard(tokens: Token[]): Token[];
@@ -57,9 +60,20 @@ export function evaluateExpressionWithSteps(
   options?: { currencyRates?: Record<string, Record<string, number>> },
 ): EvaluationWithSteps;
 export function getQuantiles(samples: number[] | null): Quantiles;
+export function sortedValidSamples(samples: number[] | null): number[];
+export function percentileOfSorted(sorted: number[], percent: number): number;
+export function percentRankOfSorted(sorted: number[], value: number): number;
+export function niceTicks(min: number, max: number, targetCount?: number): { ticks: number[]; step: number; decimals: number };
 export function formatNumber(num: number, padWidth?: number): string;
 export function generateTextHistogram(samples: number[] | null, options?: HistogramOptions): string[];
 export function computeHistogramBins(
   samples: number[] | null,
   options?: { bins?: number; trim?: number },
 ): Histogram | null;
+
+export type StepToken =
+  | { type: "number"; text: string; value: string; unit: string }
+  | { type: "unit" | "keyword" | "operator" | "paren"; text: string };
+
+export function tokenizeStep(step: string): StepToken[];
+export function diffStepTokens(prev: StepToken[], next: StepToken[]): boolean[];

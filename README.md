@@ -16,6 +16,8 @@ Notes:
 - Supported symbols in daily feed: `EUR, USD, GBP, JPY, CHF, CAD, AUD, NZD, SEK, NOK, DKK, PLN, CZK, HUF, RON, TRY, CNY, HKD, SGD, KRW, INR, MXN, BRL, ZAR, AED`.
 - If live fetch fails, the app falls back to a local EUR/PLN snapshot (`4.22`).
 - Rates can still be overridden programmatically with `evaluateExpressionWithSteps(..., { currencyRates })`.
+- Sampling uses a fixed seed (42), so the same expression always gives the same simulated numbers.
+- The likely range defaults to P5-P95. Pick another with the presets or by dragging the band edges on the histogram (arrow keys work on a focused edge); it is kept in the URL as `?p=10-90`.
 
 Deployed at: https://calc.pythonic.ninja
 

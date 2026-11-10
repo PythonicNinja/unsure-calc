@@ -8,6 +8,12 @@ const {
     getQuantiles,
     generateTextHistogram,
     computeHistogramBins,
+    tokenizeStep,
+    diffStepTokens,
+    sortedValidSamples,
+    percentileOfSorted,
+    percentRankOfSorted,
+    niceTicks,
 } = require('../calc-core');
 
 test('Tokenizer keeps minus separate from number', () => {
@@ -233,10 +239,86 @@ test('computeHistogramBins can trim outliers by quantile', () => {
     assert.strictEqual(histogram.maxVal, 99);
     assert.strictEqual(histogram.sampleCount, 98);
     assert.strictEqual(histogram.bins.reduce((sum, bin) => sum + bin.count, 0), 98);
+    assert.strictEqual(histogram.validCount, 102);
+    assert.strictEqual(histogram.belowCount, 2);
 });
 
 test('computeHistogramBins returns null without usable samples', () => {
     assert.strictEqual(computeHistogramBins([]), null);
     assert.strictEqual(computeHistogramBins([NaN, Infinity]), null);
     assert.strictEqual(computeHistogramBins(null), null);
+});
+
+const changedTexts = (prev, next) => {
+    const nextTokens = tokenizeStep(next);
+    const flags = diffStepTokens(tokenizeStep(prev), nextTokens);
+    return nextTokens.filter((_, i) => flags[i]).map((t) => t.text);
+};
+
+test('tokenizeStep splits numbers, units, operators, parens and the to keyword', () => {
+    assert.deepStrictEqual(
+        tokenizeStep('2 * (3eur + 4eur) ^ 2').map((t) => `${t.type}:${t.text}`),
+        ['number:2', 'operator:*', 'paren:(', 'number:3eur', 'operator:+', 'number:4eur', 'paren:)', 'operator:^', 'number:2'],
+    );
+    const [money, keyword, unit] = tokenizeStep('16.5eur to pln');
+    assert.deepStrictEqual(money, { type: 'number', text: '16.5eur', value: '16.5', unit: 'eur' });
+    assert.strictEqual(keyword.type, 'keyword');
+    assert.deepStrictEqual(unit, { type: 'unit', text: 'pln' });
+});
+
+test('tokenizeStep keeps exponent form and unary minus apart', () => {
+    assert.deepStrictEqual(tokenizeStep('1.0000e+9eur').map((t) => [t.value, t.unit]), [['1.0000e+9', 'eur']]);
+    assert.deepStrictEqual(tokenizeStep('--3eur').map((t) => t.text), ['-', '-', '3eur']);
+});
+
+test('diffStepTokens flags only the values a step computed', () => {
+    assert.deepStrictEqual(changedTexts('90 * 72eur + 7 * 8.45 * 38eur', '6480eur + 59.15 * 38eur'), ['6480eur', '59.15']);
+    assert.deepStrictEqual(changedTexts('6480eur + 59.15 * 38eur', '6480eur + 2247.7eur'), ['2247.7eur']);
+    assert.deepStrictEqual(changedTexts('6480eur + 2247.7eur', '8727.7eur'), ['8727.7eur']);
+    assert.deepStrictEqual(changedTexts('2 * (3eur + 4eur) ^ 2', '2 * 7eur ^ 2'), ['7eur']);
+    assert.deepStrictEqual(changedTexts('16.5eur to pln * 2', '69.63pln * 2'), ['69.63pln']);
+    assert.deepStrictEqual(changedTexts('120usd + 50eur to pln', '175usd to pln'), ['175usd']);
+});
+
+test('Sampling is seeded: the same expression gives the same samples on every run', () => {
+    const first = evaluateExpression('1~10 * 2~3', 257).samples;
+    evaluateExpression('5~6', 3); // odd sample count leaves a Box-Muller spare behind
+    assert.deepStrictEqual(evaluateExpression('1~10 * 2~3', 257).samples, first);
+
+    const currencySamples = () => evaluateExpressionWithSteps('(1~10)eur * 3 to pln', 101).result.samples;
+    assert.deepStrictEqual(currencySamples(), currencySamples());
+});
+
+test('Seeding keeps ranges inside one expression independent', () => {
+    const samples = evaluateExpression('(1~10) - (1~10)', 500).samples;
+    assert.ok(Math.max(...samples) - Math.min(...samples) > 1);
+});
+
+test('percentileOfSorted uses nearest rank and clamps the ends', () => {
+    const sorted = sortedValidSamples(Array.from({ length: 100 }, (_, i) => 100 - i));
+    assert.deepStrictEqual([5, 95, 0, 100, 50, 2.5].map((p) => percentileOfSorted(sorted, p)), [5, 95, 1, 100, 50, 3]);
+    assert.deepStrictEqual(sortedValidSamples([NaN, 3, Infinity, 1]), [1, 3]);
+    assert.ok(Number.isNaN(percentileOfSorted([], 5)));
+});
+
+test('percentRankOfSorted inverts percentileOfSorted', () => {
+    const sorted = sortedValidSamples(Array.from({ length: 100 }, (_, i) => i + 1));
+    assert.strictEqual(percentRankOfSorted(sorted, 50), 50);
+    assert.strictEqual(percentRankOfSorted(sorted, 0), 0);
+    assert.strictEqual(percentRankOfSorted(sorted, 1000), 100);
+    assert.strictEqual(percentileOfSorted(sorted, percentRankOfSorted(sorted, 37)), 37);
+    assert.ok(Number.isNaN(percentRankOfSorted([], 1)));
+});
+
+test('niceTicks picks round steps inside the span', () => {
+    assert.deepStrictEqual(niceTicks(4850.6, 5064.8, 5).ticks, [4900, 4950, 5000, 5050]);
+    assert.deepStrictEqual(niceTicks(-37, -3, 4).ticks, [-30, -20, -10]);
+    assert.deepStrictEqual(niceTicks(-22.12, 295.22, 5).ticks, [0, 50, 100, 150, 200, 250]);
+    assert.deepStrictEqual(niceTicks(0.000113, 0.000191, 4).ticks, [0.00012, 0.00014, 0.00016, 0.00018]);
+    assert.deepStrictEqual(niceTicks(5, 5).ticks, []);
+});
+
+test('niceTicks stays bounded at huge magnitudes', () => {
+    const { ticks } = niceTicks(1e20, 1e20 + 1e5, 5);
+    assert.ok(ticks.length <= 20);
 });

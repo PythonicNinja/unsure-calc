@@ -64,6 +64,14 @@
                 --cream-dark: #f7e7ce;
                 --ink: #3a2c13;
                 --muted: #6b7280;
+                --label: #5b574f;
+                --unit: #7f6127;
+                --op: #6b5d45;
+                --line: rgba(191, 163, 111, 0.35);
+                --mark: #f6e2b8;
+                --band: #8a6420;
+                --tail: #c9a862;
+                --axis: rgba(58, 44, 19, 0.28);
                 --error: #b91c1c;
                 --sans: "Manrope", "Manrope Fallback", Arial, sans-serif;
                 --serif: "DM Serif Display", "DM Serif Display Fallback", Georgia, serif;
@@ -183,54 +191,453 @@
             }
             .result.has-error { border-color: var(--error); }
             .error { color: var(--error); }
-            .hidden { display: none; }
-            #result-summary div {
+            .hidden { display: none !important; }
+            .result-note, .result-error {
                 font-family: var(--sans);
-                font-size: 1.11rem;
-                color: var(--ink);
+                font-size: 1rem;
+                color: var(--label);
+                letter-spacing: 0;
             }
             .result-note { margin-top: 0.5rem; }
+            .result-error { font-weight: 600; }
 
-            .histogram {
-                display: grid;
-                row-gap: 3px;
-                margin-top: 0.75rem;
+            .section-label {
+                font-family: var(--sans);
+                font-size: 0.72rem;
+                font-weight: 700;
+                letter-spacing: 0.09em;
+                text-transform: uppercase;
+                color: var(--label);
             }
-            .histogram-row {
+
+            .hero-row {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.5rem 1rem;
+                margin-top: 0.15rem;
+            }
+            .hero-value {
+                font-family: var(--sans);
+                font-size: clamp(2rem, 6vw, 3rem);
+                line-height: 1.15;
+                font-weight: 800;
+                letter-spacing: -0.01em;
+                color: var(--ink);
+            }
+            .amt { white-space: nowrap; }
+            .hero-unit, .stat-unit, .tok-unit {
+                margin-left: 0.2em;
+                font-weight: 700;
+                letter-spacing: 0.06em;
+            }
+            .hero-unit {
+                display: inline-block;
+                vertical-align: 0.35em;
+                padding: 0.2em 0.5em;
+                border-radius: 999px;
+                background: var(--gold-light);
+                font-size: 0.4em;
+                line-height: 1.2;
+            }
+            .hero-sep { font-weight: 400; color: var(--op); }
+            .copy-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.4em;
+                padding: 0.4rem 0.75rem;
+                border: 1px solid var(--gold);
+                border-radius: 999px;
+                background: #fff;
+                font-family: var(--sans);
+                font-size: 0.8rem;
+                font-weight: 600;
+                color: var(--ink);
+                letter-spacing: 0;
+                transition: background-color 0.15s ease;
+            }
+            .copy-btn:hover { background: var(--cream-dark); }
+            .copy-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+            .copy-btn.is-copied { background: var(--gold-light); border-color: var(--gold-light); }
+
+            .stats {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.5rem;
+                margin: 0.85rem 0 0;
+                padding: 0;
+                list-style: none;
+            }
+            .stat {
+                display: inline-flex;
+                align-items: baseline;
+                gap: 0.5em;
+                padding: 0.3rem 0.75rem;
+                border: 1px solid var(--line);
+                border-radius: 999px;
+                background: #fff;
+                font-size: 0.85rem;
+                letter-spacing: 0;
+            }
+            .stat-label { font-family: var(--sans); color: var(--label); }
+            .stat-value { font-weight: 700; color: var(--ink); }
+            .stat-unit, .tok-unit { font-size: 0.78em; color: var(--unit); }
+
+            #result-histogram:not(:empty), #result-steps:not(:empty) {
+                margin-top: 1.1rem;
+                padding-top: 1rem;
+                border-top: 1px solid var(--line);
+            }
+
+            .band-row {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.35rem 0.8rem;
+            }
+            .band-percentiles {
+                font-family: var(--sans);
+                font-size: 0.8rem;
+                font-weight: 700;
+                letter-spacing: 0;
+                font-variant-numeric: tabular-nums;
+                color: var(--ink);
+            }
+            .band-presets {
+                display: inline-flex;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+                gap: 0.2rem;
+                margin-left: auto;
+            }
+            .band-preset {
+                min-height: 1.75rem;
+                padding: 0 0.6rem;
+                border: 1px solid transparent;
+                border-radius: 999px;
+                font-family: var(--sans);
+                font-size: 0.75rem;
+                font-weight: 600;
+                letter-spacing: 0;
+                color: var(--label);
+            }
+            .band-preset:hover { border-color: var(--line); background: #fff; }
+            .band-preset[aria-pressed="true"] { background: var(--gold-light); color: var(--ink); }
+            .band-preset:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+            .band-row:not(.hidden) + #result-summary .hero-row { margin-top: 0.35rem; }
+
+            .dist { margin: 0; }
+            .dist-plot {
+                position: relative;
+                height: 9rem;
+                padding-top: 1.5rem;
+            }
+            .dist-band {
+                position: absolute;
+                top: 1.5rem;
+                bottom: 0;
+                background: rgba(138, 100, 32, 0.08);
+                pointer-events: none;
+            }
+            .dist-cols {
+                position: relative;
+                display: grid;
+                grid-template-columns: repeat(var(--bins), minmax(0, 1fr));
+                column-gap: 2px;
+                align-items: end;
+                height: 100%;
+                border-bottom: 1px solid var(--axis);
+            }
+            .dist-col {
+                position: relative;
+                display: flex;
+                align-items: flex-end;
+                justify-content: center;
+                height: 100%;
+            }
+            .dist-fill {
+                width: 100%;
+                max-width: 24px;
+                border-radius: 4px 4px 0 0;
+                background: var(--tail);
+            }
+            .dist-col.in-band .dist-fill { background: var(--band); }
+            .dist-col:hover .dist-fill { background: var(--ink); }
+            .dist-tip, .dist-handle-tip {
+                position: absolute;
+                bottom: calc(100% + 0.35rem);
+                left: 50%;
+                z-index: 2;
+                display: none;
+                flex-direction: column;
+                gap: 0.05rem;
+                padding: 0.4rem 0.6rem;
+                border-radius: 8px;
+                background: #fff;
+                box-shadow: 0 4px 14px rgba(58, 44, 19, 0.16), 0 0 0 1px var(--line);
+                font-family: var(--sans);
+                font-size: 0.75rem;
+                line-height: 1.35;
+                letter-spacing: 0;
+                white-space: nowrap;
+                color: var(--ink);
+                transform: translateX(-50%);
+                pointer-events: none;
+            }
+            .dist-tip strong { font-size: 0.95rem; }
+            .dist-tip-muted { color: var(--label); }
+            .dist-tip.is-start, .dist-handle-tip.is-start { left: 0; transform: none; }
+            .dist-tip.is-end, .dist-handle-tip.is-end { left: auto; right: 0; transform: none; }
+            .dist-col:hover .dist-tip { display: flex; }
+            .dist-handle-tip { font-weight: 700; }
+
+            .dist-handle {
+                position: absolute;
+                top: 1.5rem;
+                bottom: 0;
+                z-index: 3;
+                width: 24px;
+                margin-left: -12px;
+                cursor: ew-resize;
+                touch-action: none;
+                outline: none;
+            }
+            .dist-handle::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                left: 11px;
+                width: 2px;
+                background: var(--band);
+            }
+            .dist-handle::after {
+                content: "";
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                width: 12px;
+                height: 28px;
+                border: 2px solid var(--band);
+                border-radius: 6px;
+                background: #fff;
+                box-shadow: 0 1px 4px rgba(58, 44, 19, 0.25);
+                transform: translate(-50%, -50%);
+                transition: background-color 0.15s ease;
+            }
+            .dist-handle:hover::after, .dist-handle.is-active::after { background: var(--gold-light); }
+            .dist-handle:focus-visible::after { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--ink); }
+            .dist-handle:hover .dist-handle-tip,
+            .dist-handle:focus-visible .dist-handle-tip,
+            .dist-handle.is-active .dist-handle-tip { display: flex; }
+            .is-dragging { cursor: ew-resize; user-select: none; }
+            .is-dragging .dist-col:hover .dist-tip { display: none; }
+            .dist-mean {
+                position: absolute;
+                top: 1.15rem;
+                bottom: 0;
+                width: 2px;
+                margin-left: -1px;
+                background: var(--ink);
+                box-shadow: 0 0 0 1px var(--cream);
+                pointer-events: none;
+            }
+            .dist-mean-label {
+                position: absolute;
+                bottom: 100%;
+                left: 50%;
+                padding-bottom: 0.1rem;
+                font-family: var(--sans);
+                font-size: 0.72rem;
+                font-weight: 700;
+                letter-spacing: 0;
+                white-space: nowrap;
+                color: var(--ink);
+                transform: translateX(-50%);
+            }
+            .dist-mean-label.is-start { left: 0; transform: none; }
+            .dist-mean-label.is-end { left: auto; right: 0; transform: none; }
+            .dist-axis {
+                position: relative;
+                height: 1.5rem;
+                font-size: 0.72rem;
+                font-variant-numeric: tabular-nums;
+                letter-spacing: 0;
+                color: var(--label);
+            }
+            .dist-tick {
+                position: absolute;
+                top: 0;
+                padding-top: 0.35rem;
+                white-space: nowrap;
+                transform: translateX(-50%);
+            }
+            .dist-tick::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: 50%;
+                width: 1px;
+                height: 0.25rem;
+                background: var(--axis);
+            }
+            .dist-tick.is-start { transform: none; }
+            .dist-tick.is-start::before { left: 0; }
+            .dist-tick.is-end { transform: translateX(-100%); }
+            .dist-tick.is-end::before { left: auto; right: 0; }
+            .dist-caption {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.3rem 0.9rem;
+                margin-top: 0.4rem;
+                font-family: var(--sans);
+                font-size: 0.78rem;
+                letter-spacing: 0;
+                color: var(--label);
+            }
+            .dist-legend { display: inline-flex; align-items: center; gap: 0.4em; }
+            .dist-key { width: 0.7rem; height: 0.7rem; border-radius: 3px; background: var(--band); }
+            .dist-key-mean { width: 2px; height: 0.85rem; border-radius: 0; background: var(--ink); }
+            .dist-hint { color: var(--label); }
+            .dist-hint::before { content: "\00b7"; margin: 0 0.4em 0 0.1em; }
+            .dist-caption-note { margin-left: auto; }
+            .dist-table {
+                margin-top: 0.4rem;
+                font-family: var(--sans);
+                font-size: 0.8rem;
+                letter-spacing: 0;
+            }
+            .dist-table > summary {
+                width: fit-content;
+                cursor: pointer;
+                color: var(--unit);
+                text-decoration: underline;
+                text-underline-offset: 2px;
+            }
+            .dist-table table {
+                width: 100%;
+                margin-top: 0.5rem;
+                border-collapse: collapse;
+                font-variant-numeric: tabular-nums;
+                color: var(--ink);
+            }
+            .dist-table th, .dist-table td {
+                padding: 0.2rem 0.5rem;
+                text-align: right;
+                border-bottom: 1px solid var(--line);
+            }
+            .dist-table th:first-child, .dist-table td:first-child { text-align: left; }
+            .dist-table th { font-weight: 700; color: var(--label); }
+            .dist-table tr.in-band td { background: rgba(138, 100, 32, 0.07); }
+
+            .steps > summary {
                 display: flex;
                 align-items: center;
-                gap: 0.6em;
-                line-height: 1;
+                gap: 0.6rem;
+                cursor: pointer;
+                list-style: none;
+                border-radius: 6px;
             }
-            .histogram-label {
-                flex: 0 0 6.5em;
-                font-size: 0.8em;
-                text-align: right;
-                white-space: nowrap;
-                font-variant-numeric: tabular-nums;
-                color: #5b574f;
+            .steps > summary::-webkit-details-marker { display: none; }
+            .steps > summary::before {
+                content: "";
+                width: 0.45rem;
+                height: 0.45rem;
+                border-right: 2px solid var(--label);
+                border-bottom: 2px solid var(--label);
+                transform: rotate(-45deg);
+                transition: transform 0.2s ease;
             }
-            .histogram-track {
-                flex: 1 1 auto;
-                height: 0.85em;
-                border-radius: 3px;
-                background: rgba(191, 163, 111, 0.14);
-                overflow: hidden;
+            .steps[open] > summary::before { transform: rotate(45deg); }
+            .steps > summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+            .steps-count {
+                margin-left: auto;
+                font-family: var(--sans);
+                font-size: 0.75rem;
+                color: var(--label);
+                letter-spacing: 0;
             }
-            .histogram-bar {
-                display: block;
-                height: 100%;
-                border-radius: 3px;
-                background: linear-gradient(90deg, var(--gold) 0%, var(--gold-light) 100%);
+
+            .stepper { margin: 0.75rem 0 0; padding: 0; list-style: none; }
+            .step {
+                position: relative;
+                display: grid;
+                grid-template-columns: 1.75rem 1fr;
+                column-gap: 0.85rem;
+                align-items: start;
+                padding-bottom: 0.6rem;
             }
-            .histogram-row.is-mean .histogram-bar { background: var(--ink); }
-            .histogram-row.is-mean .histogram-label { color: var(--ink); font-weight: 700; }
-            .histogram-caption {
-                margin-top: 0.5rem;
-                font-size: 0.8em;
-                color: #5b574f;
+            .step:last-child { padding-bottom: 0; }
+            .step:not(:last-child)::after {
+                content: "";
+                position: absolute;
+                left: calc(0.875rem - 1px);
+                top: 1.75rem;
+                bottom: 0;
+                width: 2px;
+                background: var(--line);
             }
-            .steps { margin-top: 0.25rem; }
+            .step-dot {
+                display: grid;
+                place-items: center;
+                width: 1.75rem;
+                height: 1.75rem;
+                border: 2px solid var(--gold);
+                border-radius: 50%;
+                background: #fff;
+                font-family: var(--sans);
+                font-size: 0.72rem;
+                font-weight: 700;
+                color: var(--ink);
+                letter-spacing: 0;
+            }
+            .step.is-input .step-dot { border-style: dashed; }
+            .step.is-final .step-dot { background: var(--gold-light); border-color: var(--gold-light); font-size: 0.95rem; }
+            .step-expr {
+                padding-top: 0.12rem;
+                font-size: 0.95rem;
+                line-height: 1.6;
+                letter-spacing: 0.02em;
+                overflow-wrap: anywhere;
+            }
+            .step.is-input .step-expr { color: var(--label); }
+            .step.is-final .step-expr { font-weight: 700; }
+            .tok-num { white-space: nowrap; }
+            .tok-op, .tok-paren { color: var(--op); }
+            .tok-keyword { font-style: italic; color: var(--unit); }
+            .tok-target { font-size: 0.85em; font-weight: 700; letter-spacing: 0.06em; color: var(--unit); }
+            .tok-new {
+                padding: 0.05em 0.3em;
+                border-radius: 4px;
+                background: var(--mark);
+                box-shadow: inset 0 0 0 1px rgba(191, 163, 111, 0.55);
+                color: var(--ink);
+            }
+
+            @media (prefers-reduced-motion: no-preference) {
+                .steps.is-entering .step {
+                    animation: step-in 0.28s ease-out both;
+                    animation-delay: calc(var(--i, 0) * 55ms);
+                }
+                @keyframes step-in {
+                    from { opacity: 0; transform: translateY(4px); }
+                }
+                .dist.is-entering .dist-fill {
+                    transform-origin: bottom;
+                    animation: dist-grow 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+                    animation-delay: calc(var(--i, 0) * 12ms);
+                }
+                @keyframes dist-grow {
+                    from { transform: scaleY(0); }
+                }
+            }
+            @media (max-width: 520px) {
+                .dist-tick.is-alt { display: none; }
+                .dist-caption-note { margin-left: 0; }
+                .band-presets { width: 100%; margin-left: 0; justify-content: space-between; gap: 0; }
+                .band-preset { padding: 0 0.35rem; }
+            }
 
             .sr-only {
                 position: absolute;
@@ -263,9 +670,16 @@
             </div>
 
             <div id="result-container" class="result hidden">
+                <div id="band-row" class="band-row hidden" role="group" aria-labelledby="band-label">
+                    <span id="band-label" class="section-label">90% likely range</span>
+                    <span id="band-percentiles" class="band-percentiles">P5 ~ P95</span>
+                    <span id="band-presets" class="band-presets"></span>
+                </div>
                 <div id="result-summary"></div>
                 <div id="result-histogram"></div>
+                <div id="result-steps"></div>
             </div>
+            <p id="copy-status" class="sr-only" aria-live="polite"></p>
 
             <p class="hint" id="hints">
                 Use '~' for ranges. Example: <code>4.1~4.3 * 10</code>

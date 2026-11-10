@@ -12,9 +12,15 @@ const {
     evalRpn,
     evaluateExpression,
     evaluateExpressionWithSteps,
-    getQuantiles,
     formatNumber,
-    computeHistogramBins
+    computeHistogramBins,
+    tokenizeStep,
+    diffStepTokens,
+    sortedValidSamples,
+    percentileOfSorted,
+    percentRankOfSorted,
+    niceTicks,
+    DEFAULT_SEED
 } = calcCoreLib;
 
 const FX_CACHE_KEY = "unsureCalcFx.v1";
@@ -40,14 +46,8 @@ function escapeHtml(raw) {
         .replace(/>/g, "&gt;");
 }
 
-function renderStepsHtml(steps) {
-    if (!Array.isArray(steps) || steps.length === 0) return "";
-    return steps
-        .map((line, index) => `<div>${index}. ${escapeHtml(line)}</div>`)
-        .join("");
-}
 
-function getExpressionFromQuery() {
+function getQueryParam(name) {
     const query = window.location.search.startsWith("?")
         ? window.location.search.slice(1)
         : window.location.search;
@@ -56,16 +56,26 @@ function getExpressionFromQuery() {
     const pair = query
         .split("&")
         .map((chunk) => chunk.split("="))
-        .find(([key]) => key && decodeURIComponent(key) === "expr");
+        .find(([key]) => key && decodeURIComponent(key) === name);
 
     if (!pair || pair.length < 2) return "";
     const rawValue = pair.slice(1).join("=");
     try {
         return decodeURIComponent(rawValue);
     } catch (e) {
-        console.error("Failed to decode expr query parameter", e);
+        console.error(`Failed to decode ${name} query parameter`, e);
         return rawValue;
     }
+}
+
+// Edits raw "&" chunks: URLSearchParams.toString() would turn spaces in expr into "+", which getQueryParam keeps literally
+function withQueryParam(name, value) {
+    const chunks = window.location.search
+        .replace(/^\?/, "")
+        .split("&")
+        .filter((chunk) => chunk && chunk.split("=")[0] !== name);
+    if (value !== null) chunks.push(`${name}=${encodeURIComponent(value)}`);
+    return chunks.length ? `?${chunks.join("&")}` : window.location.pathname;
 }
 
 function getLocalDateStamp(date = new Date()) {
@@ -277,107 +287,515 @@ async function loadDailyFxRateState(options = {}) {
     return fxLoadPromise;
 }
 
-const EMPTY_VIEW = { summaryHtml: "Enter an expression to calculate.", histogramHtml: "", hasError: false };
+const OPERATOR_GLYPHS = { "*": "\u00d7", "/": "\u00f7", "-": "\u2212" };
+const NARROW_SPACE = "\u202f";
+const COPY_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
 
-function errorLine(message) {
-    return `<div><span class="error">${message}</span></div>`;
+// "8727.70" -> "8 727.70" (narrow no-break space); leaves exponent form alone
+function groupDigits(numberText) {
+    if (/e/i.test(numberText)) return numberText;
+    const [whole, fraction] = numberText.split(".");
+    const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, NARROW_SPACE);
+    return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
 
-const HISTOGRAM_TRIM = 0.01; // bins cover the 1st..99th percentile so outliers do not flatten the shape
-
-function buildHistogramRow(bin, histogram, isMean) {
-    const width = ((bin.count / histogram.maxCount) * 100).toFixed(2);
-    const meanNote = isMean ? `, mean \u2248 ${formatNumber(histogram.sampleMean)}` : "";
-    const title = `${formatNumber(bin.start)} \u2013 ${formatNumber(bin.end)}: ${bin.count} samples${meanNote}`;
-    return `<div class="histogram-row${isMean ? " is-mean" : ""}" title="${title}">` +
-        `<span class="histogram-label">${formatNumber(bin.start)}</span>` +
-        `<span class="histogram-track"><span class="histogram-bar" style="width:${width}%"></span></span>` +
-        `</div>`;
+function unitHtml(unit, className) {
+    return unit ? `<span class="${className}">${escapeHtml(unit.toUpperCase())}</span>` : "";
 }
 
-// Responsive CSS-bar histogram (highest bin first); the text version stays in calc-core for CLI use
-function buildHistogramHtml(samples) {
-    const histogram = computeHistogramBins(samples, { trim: HISTOGRAM_TRIM });
-    if (!histogram || histogram.maxCount === 0) return "";
-    const rows = [];
-    for (let i = histogram.bins.length - 1; i >= 0; i--) {
-        rows.push(buildHistogramRow(histogram.bins[i], histogram, i === histogram.meanBinIndex));
-    }
-    const caption = `mean \u2248 ${formatNumber(histogram.sampleMean)} \u00b7 bins span the 1st\u201399th percentile of ${histogram.sampleCount} samples`;
-    return `<div class="histogram" role="img" aria-label="Histogram of simulated results, ${caption}">${rows.join("")}</div>` +
-        `<div class="histogram-caption">${caption}</div>`;
+// "8727.70eur" -> grouped number + unit badge
+function amountHtml(text, unitClass) {
+    const match = /^(-?[\d.]+(?:e[+-]\d+)?)([a-z]*)$/i.exec(text);
+    if (!match) return escapeHtml(text);
+    return `<span class="amt">${groupDigits(match[1])}${unitHtml(match[2], unitClass)}</span>`;
 }
 
-function buildSamplesView(samples, suffix) {
-    const quantiles = getQuantiles(samples);
-    const hasError = isNaN(quantiles.p05) || isNaN(quantiles.p95);
-    const summaryHtml = hasError
-        ? errorLine("Simulated Result Contains NaN/Infinity")
-        : `<div>Simulated Range (5%-95%): ${formatNumber(quantiles.p05)}${suffix} ~ ${formatNumber(quantiles.p95)}${suffix}</div>`;
-    return { summaryHtml, histogramHtml: buildHistogramHtml(samples), hasError };
-}
-
-function buildCurrencyView(evaluation, result) {
-    const suffix = evaluation.currency ? evaluation.currency : "";
-    const displayValue = result.display ?? `${formatNumber(result.mean)}${suffix}`;
-    let hasError = isNaN(result.mean);
-    let summaryHtml = hasError
-        ? errorLine("Currency Result Contains NaN")
-        : `<div>Final Result: ${escapeHtml(displayValue)}</div>`;
-
-    const stepsHtml = renderStepsHtml(evaluation.steps);
-    if (stepsHtml) {
-        summaryHtml += `<div class="result-note">Steps:</div><div class="steps">${stepsHtml}</div>`;
-    }
-
-    let histogramHtml = "";
-    if (result.samples) {
-        const samplesView = buildSamplesView(result.samples, suffix);
-        summaryHtml += samplesView.summaryHtml;
-        histogramHtml = samplesView.histogramHtml;
-        hasError = hasError || samplesView.hasError;
-    }
-    return { summaryHtml, histogramHtml, hasError };
-}
-
-function buildRangeView(result) {
-    let hasError = isNaN(result.mean) || isNaN(result.min) || isNaN(result.max);
-    let summaryHtml = hasError
-        ? errorLine("Exact Result Contains NaN")
-        : `<div>Exact Average: ${formatNumber(result.mean)}</div><div>Exact Range : ${formatNumber(result.min)} - ${formatNumber(result.max)}</div>`;
-
-    let histogramHtml = "";
-    if (result.samples) {
-        const samplesView = buildSamplesView(result.samples, "");
-        summaryHtml += samplesView.summaryHtml;
-        histogramHtml = samplesView.histogramHtml;
-        hasError = hasError || samplesView.hasError;
+function stepTokenHtml(token, isNew) {
+    let html;
+    if (token.type === "number") {
+        html = `<span class="tok-num">${groupDigits(token.value)}${unitHtml(token.unit, "tok-unit")}</span>`;
+    } else if (token.type === "operator") {
+        html = `<span class="tok-op">${OPERATOR_GLYPHS[token.text] || escapeHtml(token.text)}</span>`;
+    } else if (token.type === "unit") {
+        html = `<span class="tok-target">${escapeHtml(token.text.toUpperCase())}</span>`;
     } else {
-        summaryHtml += `<div class="result-note">Result is an exact number, no distribution to simulate</div>`;
+        html = `<span class="tok-${token.type}">${escapeHtml(token.text)}</span>`;
     }
-    return { summaryHtml, histogramHtml, hasError };
+    return isNew ? `<mark class="tok-new">${html}</mark>` : html;
 }
 
-// Pure: expression -> {summaryHtml, histogramHtml, hasError}; never throws
-function evaluateView(expression, evaluationOptions) {
+function stepExpressionHtml(tokens, changed) {
+    return tokens.map((token, i) => stepTokenHtml(token, changed[i])).join(" ");
+}
+
+function stepDotHtml(index, lastIndex) {
+    if (index === 0) return `<span class="step-dot" aria-hidden="true"></span>`;
+    return `<span class="step-dot" aria-hidden="true">${index === lastIndex ? "=" : index}</span>`;
+}
+
+function stepRowHtml(tokens, changed, index, lastIndex) {
+    const kind = index === 0 ? " is-input" : index === lastIndex ? " is-final" : "";
+    const label = index === 0 ? "Input" : index === lastIndex ? "Result" : `Step ${index}`;
+    return `<li class="step${kind}" style="--i:${index}">${stepDotHtml(index, lastIndex)}` +
+        `<span class="sr-only">${label}: </span><span class="step-expr">${stepExpressionHtml(tokens, changed)}</span></li>`;
+}
+
+// Consecutive duplicates (e.g. a unary reduction that formats the same) add nothing to read
+function dedupeSteps(steps) {
+    return steps.filter((step, i) => i === 0 || step !== steps[i - 1]);
+}
+
+// Open state of the rendered <details> blocks, keyed by data-key, so re-renders keep what the reader opened
+const openDetails = { steps: true, table: false };
+
+function openAttr(key) {
+    return openDetails[key] ? " open" : "";
+}
+
+// Entrance animations run only for calculations the reader starts; the first frame on load is final
+function enteringClass(animate) {
+    return animate ? " is-entering" : "";
+}
+
+// Stepper: input, each reduction (newly computed values highlighted), final value
+function buildStepsHtml(rawSteps, animate) {
+    const steps = dedupeSteps(Array.isArray(rawSteps) ? rawSteps : []);
+    if (steps.length < 2) return "";
+    const tokenized = steps.map(tokenizeStep);
+    const lastIndex = steps.length - 1;
+    const rows = tokenized.map((tokens, i) => {
+        const changed = i === 0 ? tokens.map(() => false) : diffStepTokens(tokenized[i - 1], tokens);
+        return stepRowHtml(tokens, changed, i, lastIndex);
+    });
+    const count = `${lastIndex} ${lastIndex === 1 ? "step" : "steps"}`;
+    return `<details class="steps${enteringClass(animate)}" data-key="steps"${openAttr("steps")}>` +
+        `<summary><span class="section-label">How it was worked out</span><span class="steps-count">${count}</span></summary>` +
+        `<ol class="stepper">${rows.join("")}</ol></details>`;
+}
+
+// aria-live off: the band handles already announce their values, a live output would repeat every drag frame
+function heroHtml(label, valueHtml, copyText) {
+    const labelHtml = label ? `<div class="section-label">${label}</div>` : "";
+    const copy = copyText
+        ? `<button type="button" class="copy-btn" data-copy="${escapeHtml(copyText)}" aria-label="Copy ${escapeHtml(copyText)}">${COPY_ICON}<span class="copy-text">Copy</span></button>`
+        : "";
+    return `<div class="hero">${labelHtml}` +
+        `<div class="hero-row"><output class="hero-value" aria-live="off">${valueHtml}</output>${copy}</div></div>`;
+}
+
+function statsHtml(stats) {
+    if (stats.length === 0) return "";
+    const items = stats.map(([label, valueHtml]) =>
+        `<li class="stat"><span class="stat-label">${label}</span><span class="stat-value">${valueHtml}</span></li>`);
+    return `<ul class="stats">${items.join("")}</ul>`;
+}
+
+function noteHtml(text) {
+    return `<p class="result-note">${text}</p>`;
+}
+
+function errorHtml(message) {
+    return `<div class="result-error" role="alert"><span class="error">${message}</span></div>`;
+}
+
+function emptyView(summaryHtml, hasError = false) {
+    return { summaryHtml, histogramHtml: "", stepsHtml: "", hasError, simulation: null };
+}
+
+const EMPTY_VIEW = emptyView(noteHtml("Enter an expression to calculate."));
+
+const HISTOGRAM_TRIM = 0.01; // the chart spans P1..P99 so a few outliers do not flatten the shape
+const HISTOGRAM_BINS = 32;
+const AXIS_TICKS = 5;
+const COMPACT_UNITS = [[1e12, "T"], [1e9, "B"], [1e6, "M"]];
+const MIN_BAND_GAP = 1; // percentiles between the two band edges
+
+// 5 -> "5", 2.5 -> "2.5"
+function percentText(value) {
+    return String(Number(value.toFixed(2)));
+}
+
+function shareText(fraction) {
+    const percent = fraction * 100;
+    if (percent === 0) return "0%";
+    if (percent < 0.1) return "<0.1%";
+    return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
+}
+
+function plainAmount(value, unit) {
+    return `${groupDigits(formatNumber(value))}${unit ? ` ${unit.toUpperCase()}` : ""}`;
+}
+
+function plainRange(low, high, unit) {
+    return `${plainAmount(low, "")} ~ ${plainAmount(high, unit)}`;
+}
+
+function positionPercent(value, histogram) {
+    const position = ((value - histogram.minVal) / (histogram.maxVal - histogram.minVal)) * 100;
+    return Math.min(100, Math.max(0, position));
+}
+
+// Labels near an edge hang inward instead of centering past the plot
+function edgeClass(position, margin) {
+    if (position < margin) return " is-start";
+    return position > 100 - margin ? " is-end" : "";
+}
+
+function binInBand(bin, band) {
+    const center = (bin.start + bin.end) / 2;
+    return center >= band.lowValue && center <= band.highValue;
+}
+
+// Share of all valid samples at or below each bin's upper edge (the P0..P1 tail included)
+function cumulativeShares(histogram) {
+    let running = histogram.belowCount;
+    return histogram.bins.map((bin) => {
+        running += bin.count;
+        return running / histogram.validCount;
+    });
+}
+
+function columnTipHtml(bin, index, chart) {
+    const { histogram, cumulative, unit } = chart;
+    const align = edgeClass((index / histogram.bins.length) * 100, 20);
+    return `<span class="dist-tip${align}"><strong>${shareText(bin.count / histogram.validCount)}</strong>` +
+        `<span>${plainRange(bin.start, bin.end, unit)}</span>` +
+        `<span class="dist-tip-muted">${shareText(cumulative[index])} at or below ${plainAmount(bin.end, unit)}</span></span>`;
+}
+
+function columnHtml(bin, index, chart) {
+    const ratio = (bin.count / chart.histogram.maxCount) * 100;
+    const height = bin.count ? `max(2px, ${ratio.toFixed(2)}%)` : "0";
+    return `<span class="dist-col" style="--i:${index}"><span class="dist-fill" style="height:${height}"></span>` +
+        `${columnTipHtml(bin, index, chart)}</span>`;
+}
+
+function meanMarkerHtml(chart) {
+    const { histogram, unit } = chart;
+    const left = positionPercent(histogram.sampleMean, histogram);
+    return `<span class="dist-mean" style="left:${left.toFixed(2)}%">` +
+        `<span class="dist-mean-label${edgeClass(left, 15)}">mean ${plainAmount(histogram.sampleMean, unit)}</span></span>`;
+}
+
+// Band edges are sliders on the chart itself: drag them, or focus one and use the arrow keys
+function handleHtml(edge, label) {
+    return `<span class="dist-handle is-${edge}" data-edge="${edge}" role="slider" tabindex="0" aria-label="${label}" ` +
+        `aria-orientation="horizontal"><span class="dist-handle-tip"></span></span>`;
+}
+
+// Full numbers under a million, compact (1.25M) above; tiny values in exponent form
+function formatTick(value, decimals) {
+    const abs = Math.abs(value);
+    const compact = COMPACT_UNITS.find(([size]) => abs >= size);
+    if (compact) return `${Number((value / compact[0]).toPrecision(3))}${compact[1]}`;
+    if (abs !== 0 && abs < 1e-6) return value.toExponential(1);
+    return groupDigits(value.toFixed(decimals));
+}
+
+function axisHtml(histogram) {
+    const { ticks, decimals } = niceTicks(histogram.minVal, histogram.maxVal, AXIS_TICKS);
+    const crowded = ticks.length > 4;
+    const items = ticks.map((tick, i) => {
+        const left = positionPercent(tick, histogram);
+        const alt = crowded && i % 2 === 1 ? " is-alt" : "";
+        return `<span class="dist-tick${alt}${edgeClass(left, 6)}" style="left:${left.toFixed(2)}%">${formatTick(tick, decimals)}</span>`;
+    });
+    return `<div class="dist-axis" aria-hidden="true">${items.join("")}</div>`;
+}
+
+function captionHtml(chart) {
+    const samples = groupDigits(String(chart.histogram.validCount));
+    return `<figcaption class="dist-caption">` +
+        `<span class="dist-legend"><span class="dist-key" aria-hidden="true"></span><span class="dist-band-label"></span>` +
+        `<span class="dist-hint">drag the edges to adjust</span></span>` +
+        `<span class="dist-legend"><span class="dist-key dist-key-mean" aria-hidden="true"></span>mean</span>` +
+        `<span class="dist-caption-note">${samples} samples · seed ${DEFAULT_SEED} · P1-P99 shown</span></figcaption>`;
+}
+
+// Table twin of the chart: every value the tooltips show, reachable without hovering
+function tableHtml(chart) {
+    const { histogram, cumulative, unit } = chart;
+    const rows = histogram.bins.map((bin, i) =>
+        `<tr><td>${plainRange(bin.start, bin.end, unit)}</td>` +
+        `<td>${shareText(bin.count / histogram.validCount)}</td><td>${shareText(cumulative[i])}</td></tr>`);
+    return `<details class="dist-table" data-key="table"${openAttr("table")}><summary>Show as table</summary>` +
+        `<table><thead><tr><th scope="col">Outcome</th><th scope="col">Share</th><th scope="col">At or below</th></tr></thead>` +
+        `<tbody>${rows.join("")}</tbody></table></details>`;
+}
+
+function chartLabel(chart) {
+    const { histogram, unit } = chart;
+    return `Distribution of ${histogram.validCount} simulated outcomes, mean ${plainAmount(histogram.sampleMean, unit)}.`;
+}
+
+// Column histogram on a value axis: mean line, round ticks, per-column tooltips, table twin.
+// Band-neutral on purpose; paintBand() adds the band so dragging it never rebuilds the chart.
+function buildHistogramHtml(simulation, animate) {
+    const { histogram, unit } = simulation;
+    if (!histogram || histogram.maxCount === 0 || !(histogram.maxVal > histogram.minVal)) return "";
+    const chart = { histogram, unit, cumulative: cumulativeShares(histogram) };
+    const columns = histogram.bins.map((bin, i) => columnHtml(bin, i, chart));
+    return `<figure class="dist${enteringClass(animate)}"><div class="dist-plot"><span class="dist-band"></span>` +
+        `<div class="dist-cols" role="img" aria-label="${escapeHtml(chartLabel(chart))}" style="--bins:${histogram.bins.length}">` +
+        `${columns.join("")}</div>${meanMarkerHtml(chart)}${handleHtml("low", "Lower percentile")}${handleHtml("high", "Upper percentile")}</div>` +
+        `${axisHtml(histogram)}${captionHtml(chart)}${tableHtml(chart)}</figure>`;
+}
+
+function paintHandle(handle, edge, resolved, simulation) {
+    const isLow = edge === "low";
+    const percent = isLow ? resolved.low : resolved.high;
+    const value = isLow ? resolved.lowValue : resolved.highValue;
+    const position = positionPercent(value, simulation.histogram);
+    const text = `P${percentText(percent)} · ${plainAmount(value, simulation.unit)}`;
+    handle.style.left = `${position.toFixed(2)}%`;
+    handle.setAttribute("aria-valuemin", isLow ? "0" : percentText(resolved.low + MIN_BAND_GAP));
+    handle.setAttribute("aria-valuemax", isLow ? percentText(resolved.high - MIN_BAND_GAP) : "100");
+    handle.setAttribute("aria-valuenow", percentText(percent));
+    handle.setAttribute("aria-valuetext", text);
+    handle.firstElementChild.textContent = text;
+    handle.firstElementChild.className = `dist-handle-tip${edgeClass(position, 12)}`;
+}
+
+// Paints the band onto the rendered chart in place (wash, column and table emphasis, handles, legend)
+function paintBand(container, resolved, simulation) {
+    const figure = container.querySelector(".dist");
+    if (!figure) return;
+    const { bins } = simulation.histogram;
+    const left = positionPercent(resolved.lowValue, simulation.histogram);
+    const right = positionPercent(resolved.highValue, simulation.histogram);
+    const wash = figure.querySelector(".dist-band");
+    wash.style.left = `${left.toFixed(2)}%`;
+    wash.style.width = `${(right - left).toFixed(2)}%`;
+    figure.querySelectorAll(".dist-col").forEach((col, i) => col.classList.toggle("in-band", binInBand(bins[i], resolved)));
+    figure.querySelectorAll(".dist-table tbody tr").forEach((row, i) => row.classList.toggle("in-band", binInBand(bins[i], resolved)));
+    paintHandle(figure.querySelector(".dist-handle.is-low"), "low", resolved, simulation);
+    paintHandle(figure.querySelector(".dist-handle.is-high"), "high", resolved, simulation);
+    figure.querySelector(".dist-band-label").textContent = `${resolved.coverage} likely range`;
+}
+
+function formatAmount(value, unit) {
+    return `${formatNumber(value)}${unit}`;
+}
+
+function rangeText(low, high, unit) {
+    return `${formatNumber(low)}~${formatNumber(high)}${unit}`;
+}
+
+function rangeHtml(low, high, unit) {
+    return `${amountHtml(formatNumber(low), "")} <span class="hero-sep">~</span> ${amountHtml(formatAmount(high, unit), "hero-unit")}`;
+}
+
+function exactStats(result, unit) {
+    const unitClass = "stat-unit";
+    return [
+        ["Exact average", amountHtml(result.display ?? formatAmount(result.mean, unit), unitClass)],
+        ["Exact range", `${amountHtml(formatNumber(result.min), "")} ~ ${amountHtml(formatAmount(result.max, unit), unitClass)}`],
+    ];
+}
+
+function hasNaN(...values) {
+    return values.some((value) => isNaN(value));
+}
+
+// Everything a band change needs, so moving the band never re-evaluates the expression
+function buildSimulation(samples, unit, stats) {
+    const sorted = sortedValidSamples(samples);
+    const histogram = computeHistogramBins(sorted, { bins: HISTOGRAM_BINS, trim: HISTOGRAM_TRIM });
+    return { sorted, histogram, unit, stats };
+}
+
+function resolveBand(simulation, band) {
+    return {
+        ...band,
+        lowValue: percentileOfSorted(simulation.sorted, band.low),
+        highValue: percentileOfSorted(simulation.sorted, band.high),
+        coverage: `${percentText(band.high - band.low)}%`,
+    };
+}
+
+function simulatedSummaryHtml(simulation, resolved) {
+    const { unit, stats } = simulation;
+    return heroHtml("", rangeHtml(resolved.lowValue, resolved.highValue, unit),
+        rangeText(resolved.lowValue, resolved.highValue, unit)) + statsHtml(stats);
+}
+
+// Ranges: the simulated band (P5-P95 unless the reader picks another) is the headline, exact figures go into the chips.
+// The band row above the hero is its label; the band edges on the chart are its input.
+function buildSimulatedView(samples, unit, stats, stepsHtml, display) {
+    const simulation = buildSimulation(samples, unit, stats);
+    if (simulation.sorted.length === 0) {
+        return { ...emptyView(errorHtml("Simulated result contains NaN/Infinity"), true), stepsHtml };
+    }
+    const summaryHtml = simulatedSummaryHtml(simulation, resolveBand(simulation, display.band));
+    const histogramHtml = buildHistogramHtml(simulation, display.animate);
+    return { summaryHtml, histogramHtml, stepsHtml, hasError: false, simulation };
+}
+
+function buildCurrencyView(evaluation, result, display) {
+    const unit = evaluation.currency || "";
+    const displayValue = result.display ?? formatAmount(result.mean, unit);
+    const stepsHtml = buildStepsHtml(evaluation.steps, display.animate);
+    if (isNaN(result.mean)) return { ...emptyView(errorHtml("Currency result contains NaN"), true), stepsHtml };
+    if (!result.samples) {
+        return { ...emptyView(heroHtml("Result", amountHtml(displayValue, "hero-unit"), displayValue)), stepsHtml };
+    }
+    return buildSimulatedView(result.samples, unit, exactStats(result, unit), stepsHtml, display);
+}
+
+function buildRangeView(result, display) {
+    if (hasNaN(result.mean, result.min, result.max)) return emptyView(errorHtml("Exact result contains NaN"), true);
+    if (!result.samples) {
+        const value = formatNumber(result.mean);
+        return emptyView(heroHtml("Result", amountHtml(value, "hero-unit"), value) +
+            noteHtml("Exact number, no distribution to simulate."));
+    }
+    return buildSimulatedView(result.samples, "", exactStats(result, ""), "", display);
+}
+
+// Pure: (expression, rates, {band, animate}) -> {summaryHtml, histogramHtml, stepsHtml, hasError, simulation}; never throws
+function evaluateView(expression, evaluationOptions, display) {
     if (!expression.trim()) return EMPTY_VIEW;
     try {
         const evaluation = evaluateExpressionWithSteps(expression, undefined, evaluationOptions);
         const result = evaluation?.result;
-        if (!result) return { summaryHtml: "", histogramHtml: "", hasError: false };
-        return evaluation.isCurrencyExpression ? buildCurrencyView(evaluation, result) : buildRangeView(result);
+        if (!result) return emptyView("");
+        return evaluation.isCurrencyExpression
+            ? buildCurrencyView(evaluation, result, display)
+            : buildRangeView(result, display);
     } catch (error) {
         console.error("Calculation Error:", error);
-        return { summaryHtml: errorLine(`Error: ${escapeHtml(error.message)}`), histogramHtml: "", hasError: true };
+        return emptyView(errorHtml(`Error: ${escapeHtml(error.message)}`), true);
     }
 }
 
 function pushExpressionToUrl(expression) {
-    const params = new URLSearchParams(window.location.search);
-    params.delete("expr");
-    const rest = params.toString();
-    const encodedExpression = encodeURIComponent(expression);
-    window.history.pushState(null, "", rest ? `?${rest}&expr=${encodedExpression}` : `?expr=${encodedExpression}`);
+    window.history.pushState(null, "", withQueryParam("expr", expression));
+}
+
+const BAND_PARAM = "p";
+const DEFAULT_BAND = { low: 5, high: 95 };
+const BAND_PRESETS = [10, 25, 50, 80, 90, 95, 98]; // central coverage in %, centered on the median
+
+function presetBand(coverage) {
+    return { low: 50 - coverage / 2, high: 50 + coverage / 2 };
+}
+
+function presetButtonsHtml() {
+    return BAND_PRESETS.map((coverage) => {
+        const { low, high } = presetBand(coverage);
+        return `<button type="button" class="band-preset" data-coverage="${coverage}" aria-pressed="false" ` +
+            `aria-label="${coverage}% range, P${percentText(low)} to P${percentText(high)}">${coverage}%</button>`;
+    }).join("");
+}
+
+function validBand(low, high) {
+    const ok = Number.isFinite(low) && Number.isFinite(high) && low >= 0 && high <= 100 && high - low >= MIN_BAND_GAP;
+    return ok ? { low, high } : null;
+}
+
+// "?p=10-90" -> {low: 10, high: 90}; anything else -> the default P5-P95
+function readBandFromUrl() {
+    const match = /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(getQueryParam(BAND_PARAM));
+    return (match && validBand(Number(match[1]), Number(match[2]))) || DEFAULT_BAND;
+}
+
+function sameBand(a, b) {
+    return a.low === b.low && a.high === b.high;
+}
+
+function replaceBandInUrl(band) {
+    const value = sameBand(band, DEFAULT_BAND) ? null : `${percentText(band.low)}-${percentText(band.high)}`;
+    window.history.replaceState(null, "", withQueryParam(BAND_PARAM, value));
+}
+
+function getBandControls() {
+    const row = document.getElementById("band-row");
+    const label = document.getElementById("band-label");
+    const percentiles = document.getElementById("band-percentiles");
+    const presets = document.getElementById("band-presets");
+    if (!row || !label || !percentiles || !presets) return null;
+    presets.innerHTML = presetButtonsHtml();
+    return { row, label, percentiles, presets };
+}
+
+function syncBandControls(controls, band) {
+    controls.label.textContent = `${percentText(band.high - band.low)}% likely range`;
+    controls.percentiles.textContent = `P${percentText(band.low)} ~ P${percentText(band.high)}`;
+    for (const preset of controls.presets.querySelectorAll(".band-preset")) {
+        const pressed = sameBand(presetBand(Number(preset.dataset.coverage)), band);
+        preset.setAttribute("aria-pressed", String(pressed));
+    }
+}
+
+// Moves one edge, keeping the other fixed and the two at least MIN_BAND_GAP apart
+function moveBandEdge(band, edge, percent) {
+    if (edge === "low") return { low: Math.min(Math.max(percent, 0), band.high - MIN_BAND_GAP), high: band.high };
+    return { low: band.low, high: Math.max(Math.min(percent, 100), band.low + MIN_BAND_GAP) };
+}
+
+// Pointer x over the plot -> percentile of the samples at that value, snapped to half a percent
+function percentAtPointer(clientX, rect, simulation) {
+    const { minVal, maxVal } = simulation.histogram;
+    const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    const percent = percentRankOfSorted(simulation.sorted, minVal + fraction * (maxVal - minVal));
+    return Math.round(percent * 2) / 2;
+}
+
+const HANDLE_KEY_STEPS = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1, PageDown: -5, PageUp: 5 };
+
+// Slider keys -> target percentile for that edge; null for keys a slider leaves alone
+function keyTargetPercent(key, current) {
+    if (key in HANDLE_KEY_STEPS) return current + HANDLE_KEY_STEPS[key];
+    if (key === "Home") return 0;
+    if (key === "End") return 100;
+    return null;
+}
+
+const HANDLE_OVERLAP_PX = 16;
+
+// Stacked handles (a narrow band) cannot be told apart by hit-testing; the first drag direction decides
+function handlesOverlap(plot) {
+    const low = plot.querySelector(".dist-handle.is-low").getBoundingClientRect();
+    const high = plot.querySelector(".dist-handle.is-high").getBoundingClientRect();
+    return Math.abs(high.left - low.left) < HANDLE_OVERLAP_PX;
+}
+
+const renderedHtml = new WeakMap();
+
+// innerHTML only when the markup changed, so unchanged parts keep their state and do not replay animations
+function setHtml(element, html) {
+    if (renderedHtml.get(element) === html) return;
+    renderedHtml.set(element, html);
+    element.innerHTML = html;
+}
+
+const COPIED_RESET_MS = 1500;
+
+async function copyFromButton(button, statusDisplay) {
+    try {
+        await navigator.clipboard.writeText(button.dataset.copy);
+    } catch (error) {
+        console.warn("Clipboard write failed", error);
+        return;
+    }
+    button.classList.add("is-copied");
+    button.querySelector(".copy-text").textContent = "Copied";
+    if (statusDisplay) statusDisplay.textContent = `Copied ${button.dataset.copy}`;
+    setTimeout(() => {
+        button.classList.remove("is-copied");
+        button.querySelector(".copy-text").textContent = "Copy";
+    }, COPIED_RESET_MS);
+}
+
+function handleResultClick(event, statusDisplay) {
+    const button = event.target.closest(".copy-btn");
+    if (button) copyFromButton(button, statusDisplay);
+}
+
+// <details> "toggle" does not bubble, so this listens in the capture phase
+function rememberDetailsToggle(event) {
+    const key = event.target.dataset?.key;
+    if (key in openDetails) openDetails[key] = event.target.open;
 }
 
 function setupBrowserHandlers() {
@@ -385,14 +803,24 @@ function setupBrowserHandlers() {
     const calculateBtn = document.getElementById("calculateBtn");
     const resultSummaryDisplay = document.getElementById("result-summary");
     const resultHistogramDisplay = document.getElementById("result-histogram");
+    const resultStepsDisplay = document.getElementById("result-steps");
+    const copyStatusDisplay = document.getElementById("copy-status");
     const resultContainer = document.getElementById("result-container");
     const rateStatusDisplay = document.getElementById("rate-status");
 
-    if (!expressionInput || !calculateBtn || !resultSummaryDisplay || !resultHistogramDisplay || !resultContainer) {
+    if (!expressionInput || !calculateBtn || !resultSummaryDisplay || !resultHistogramDisplay || !resultStepsDisplay || !resultContainer) {
         return;
     }
 
-    const expr = getExpressionFromQuery();
+    const bandControls = getBandControls();
+    let band = readBandFromUrl();
+    let lastSimulation = null;
+    let drag = null;
+    let pendingBand = null;
+    let frame = 0;
+    if (bandControls) syncBandControls(bandControls, band);
+
+    const expr = getQueryParam("expr");
     if (expr && expr !== "null") {
         expressionInput.value = expr;
     }
@@ -419,36 +847,130 @@ function setupBrowserHandlers() {
         }
     }
 
-    function renderEvaluation(expression, evaluationOptions, { skipIfError = false } = {}) {
-        const view = evaluateView(expression, evaluationOptions);
+    // Sampling is seeded, so a re-render with the same rates yields the same markup and setHtml skips it
+    function renderEvaluation(expression, evaluationOptions, { skipIfError = false, animate = false } = {}) {
+        const view = evaluateView(expression, evaluationOptions, { band, animate });
         if (skipIfError && view.hasError) return;
-        resultSummaryDisplay.innerHTML = view.summaryHtml;
-        resultHistogramDisplay.innerHTML = view.histogramHtml;
+        lastSimulation = view.simulation;
+        if (bandControls) bandControls.row.classList.toggle("hidden", !view.simulation);
+        setHtml(resultSummaryDisplay, view.summaryHtml);
+        setHtml(resultHistogramDisplay, view.histogramHtml);
+        setHtml(resultStepsDisplay, view.stepsHtml);
+        if (view.simulation) paintBand(resultHistogramDisplay, resolveBand(view.simulation, band), view.simulation);
         resultContainer.classList.toggle("has-error", view.hasError);
         resultContainer.classList.remove("hidden");
     }
 
+    // A band change repaints from the last simulation: no re-evaluation, no pushState, no chart rebuild
+    function applyBand(nextBand, { updateUrl = true } = {}) {
+        band = nextBand;
+        if (bandControls) syncBandControls(bandControls, band);
+        if (updateUrl) replaceBandInUrl(band);
+        if (!lastSimulation) return;
+        const resolved = resolveBand(lastSimulation, band);
+        setHtml(resultSummaryDisplay, simulatedSummaryHtml(lastSimulation, resolved));
+        paintBand(resultHistogramDisplay, resolved, lastSimulation);
+    }
+
+    // Pointer drags repaint at most once per frame; the URL is written when the drag ends
+    function scheduleBand(nextBand) {
+        pendingBand = nextBand;
+        if (frame) return;
+        frame = requestAnimationFrame(() => {
+            frame = 0;
+            applyBand(pendingBand, { updateUrl: false });
+        });
+    }
+
+    function handleBandPreset(event) {
+        const preset = event.target.closest(".band-preset");
+        if (preset) applyBand(presetBand(Number(preset.dataset.coverage)));
+    }
+
+    // Capture goes on the persistent container, so the drag survives a chart re-render (e.g. live FX rates)
+    function startHandleDrag(event) {
+        const handle = event.target.closest(".dist-handle");
+        if (!handle || !lastSimulation || event.button > 0) return;
+        event.preventDefault();
+        handle.focus({ preventScroll: true });
+        const plot = handle.parentElement;
+        drag = {
+            pointerId: event.pointerId,
+            edge: handle.dataset.edge,
+            handle,
+            startX: event.clientX,
+            ambiguous: handlesOverlap(plot),
+            rect: plot.querySelector(".dist-cols").getBoundingClientRect(),
+        };
+        handle.classList.add("is-active");
+        resultHistogramDisplay.classList.add("is-dragging");
+        resultHistogramDisplay.setPointerCapture(event.pointerId);
+    }
+
+    function moveHandleDrag(event) {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        if (drag.ambiguous) {
+            if (Math.abs(event.clientX - drag.startX) < 3) return;
+            drag.edge = event.clientX < drag.startX ? "low" : "high";
+            drag.ambiguous = false;
+        }
+        scheduleBand(moveBandEdge(pendingBand || band, drag.edge, percentAtPointer(event.clientX, drag.rect, lastSimulation)));
+    }
+
+    function endHandleDrag(event) {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        drag.handle.classList.remove("is-active");
+        drag = null;
+        resultHistogramDisplay.classList.remove("is-dragging");
+        if (frame) {
+            cancelAnimationFrame(frame);
+            frame = 0;
+            applyBand(pendingBand, { updateUrl: false });
+        }
+        pendingBand = null;
+        replaceBandInUrl(band);
+    }
+
+    function handleHandleKey(event) {
+        const handle = event.target.closest(".dist-handle");
+        if (!handle || !lastSimulation) return;
+        const edge = handle.dataset.edge;
+        const target = keyTargetPercent(event.key, edge === "low" ? band.low : band.high);
+        if (target === null) return;
+        event.preventDefault();
+        applyBand(moveBandEdge(band, edge, target));
+    }
+
     // Non-currency expressions render synchronously (before the first paint on initial load)
-    async function calculate() {
+    async function calculate({ animate = false } = {}) {
         const expression = expressionInput.value;
         if (expression) pushExpressionToUrl(expression);
 
         if (!isCurrencyLikeExpression(expression)) {
-            renderEvaluation(expression, {});
+            renderEvaluation(expression, {}, { animate });
             return;
         }
 
         // Provisional render with today's cached (or fallback) rates keeps the result box in the first frame;
         // the live rates re-render the same layout, so nothing moves.
-        renderEvaluation(expression, buildCurrencyRateOptions(getProvisionalFxRates()), { skipIfError: true });
+        renderEvaluation(expression, buildCurrencyRateOptions(getProvisionalFxRates()), { skipIfError: true, animate });
         const state = await loadDailyFxRateState();
         renderRateStatusWithRefetch(state);
-        renderEvaluation(expression, buildCurrencyRateOptions(state.rates));
+        renderEvaluation(expression, buildCurrencyRateOptions(state.rates), { animate });
     }
 
-    calculateBtn.addEventListener("click", calculate);
+    calculateBtn.addEventListener("click", () => calculate({ animate: true }));
+    resultContainer.addEventListener("click", (event) => handleResultClick(event, copyStatusDisplay));
+    resultContainer.addEventListener("toggle", rememberDetailsToggle, true);
+    resultHistogramDisplay.addEventListener("pointerdown", startHandleDrag);
+    resultHistogramDisplay.addEventListener("pointermove", moveHandleDrag);
+    resultHistogramDisplay.addEventListener("pointerup", endHandleDrag);
+    resultHistogramDisplay.addEventListener("pointercancel", endHandleDrag);
+    resultHistogramDisplay.addEventListener("lostpointercapture", endHandleDrag);
+    resultHistogramDisplay.addEventListener("keydown", handleHandleKey);
+    if (bandControls) bandControls.row.addEventListener("click", handleBandPreset);
     expressionInput.addEventListener("keypress", (event) => {
-        if (event.key === "Enter") calculate();
+        if (event.key === "Enter") calculate({ animate: true });
     });
     document.querySelector('h1')?.addEventListener('click', reset);
 

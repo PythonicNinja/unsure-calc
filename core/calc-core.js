@@ -5,13 +5,31 @@ const DEFAULT_SAMPLES = 10000;
 const DEFAULT_BINS = 20;
 const DEFAULT_WIDTH = 40;
 const DEFAULT_BAR = "█";
+const DEFAULT_SEED = 42;
+const MAX_TICKS = 20;
 const BASE_CURRENCY_TOKEN = "__base__";
 const DEFAULT_CURRENCY_RATES = {
   eur: { pln: 4.22 },
   pln: { eur: 1 / 4.22 },
 };
 
+let randomState = DEFAULT_SEED;
 let spareRandom = null;
+
+// mulberry32: small seeded PRNG, so the same expression gives the same samples on every run
+function nextRandom() {
+  randomState = (randomState + 0x6d2b79f5) >>> 0;
+  let t = randomState;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+// Called once per top-level evaluation; drops the cached Box-Muller spare too, or it would leak into the next run
+function resetRandom(seed = DEFAULT_SEED) {
+  randomState = seed >>> 0;
+  spareRandom = null;
+}
 
 // Gaussian (normal) RNG using the Box-Muller transform; returns N(mean, stdDev)
 function gaussianRandom(mean, stdDev) {
@@ -22,8 +40,8 @@ function gaussianRandom(mean, stdDev) {
     return mean + stdDev * temp;
   }
   do {
-    u = Math.random() * 2 - 1;
-    v = Math.random() * 2 - 1;
+    u = nextRandom() * 2 - 1;
+    v = nextRandom() * 2 - 1;
     s = u * u + v * v;
   } while (s >= 1 || s === 0);
   const mul = Math.sqrt((-2.0 * Math.log(s)) / s);
@@ -181,6 +199,7 @@ function operateSamples(samplesA, samplesB, operation, sampleCount) {
 
 // Evaluate RPN queue into an UncertainValue (mean/min/max/samples), handling NEG and '~'
 function evalRpn(rpnQueue, sampleCount = DEFAULT_SAMPLES) {
+  resetRandom();
   const stack = [];
 
   const createNumberValue = (num) => ({
@@ -1170,6 +1189,7 @@ function evaluateCurrencyExpressionWithSteps(expression, sampleCountOrOptions = 
 
   if (!looksLikeCurrencyExpression) return null;
 
+  resetRandom();
   const rates = buildCurrencyRateMap(options.currencyRates);
   const leftTokens = topLevelToIndex >= 0 ? tokens.slice(0, topLevelToIndex) : tokens;
   if (leftTokens.length === 0) throw new Error("Missing expression before currency conversion");
@@ -1291,6 +1311,64 @@ function getQuantiles(samples) {
   };
 }
 
+function nearestRankIndex(percent, length) {
+  return Math.min(length - 1, Math.max(0, Math.ceil((percent / 100) * length) - 1));
+}
+
+// Finite samples in ascending order; sort once, then read percentiles in O(1) and ranks in O(log n)
+function sortedValidSamples(samples) {
+  const valid = Array.isArray(samples) ? samples.filter((n) => !isNaN(n) && isFinite(n)) : [];
+  return valid.sort((a, b) => a - b);
+}
+
+// Nearest-rank percentile (0..100) of an ascending array; NaN when empty
+function percentileOfSorted(sorted, percent) {
+  return sorted.length ? sorted[nearestRankIndex(percent, sorted.length)] : NaN;
+}
+
+// Share of samples (0..100) at or below value, the inverse of percentileOfSorted; binary search
+function percentRankOfSorted(sorted, value) {
+  if (sorted.length === 0) return NaN;
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sorted[mid] <= value) lo = mid + 1;
+    else hi = mid;
+  }
+  return (lo / sorted.length) * 100;
+}
+
+function niceTickStep(span, targetCount) {
+  const raw = span / targetCount;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const residual = raw / magnitude;
+  const factor = residual < 1.5 ? 1 : residual < 3 ? 2 : residual < 7 ? 5 : 10;
+  return factor * magnitude;
+}
+
+// Decimals a tick step needs: 50 -> 0, 0.5 -> 1, 0.02 -> 2
+function stepDecimals(step) {
+  return Math.min(20, Math.max(0, -Math.floor(Math.log10(step) + 1e-9)));
+}
+
+// Round-numbered axis ticks (1/2/5 x 10^k apart) inside [min, max]. Capped at MAX_TICKS so float
+// precision at huge magnitudes can never spin the loop forever.
+function niceTicks(min, max, targetCount = 5) {
+  const span = max - min;
+  if (!(span > 0) || !isFinite(span)) return { ticks: [], step: 0, decimals: 0 };
+  const step = niceTickStep(span, targetCount);
+  const decimals = stepDecimals(step);
+  const first = Math.ceil(min / step);
+  const ticks = [];
+  for (let k = 0; k < MAX_TICKS; k++) {
+    const value = Number(((first + k) * step).toFixed(decimals));
+    if (value > max + step * 1e-9) break;
+    if (value >= min - step * 1e-9 && value !== ticks[ticks.length - 1]) ticks.push(value);
+  }
+  return { ticks, step, decimals };
+}
+
 // Nicely format numbers with adaptive precision and optional left padding
 function formatNumber(num, padWidth = 0) {
   let str;
@@ -1358,12 +1436,15 @@ function computeHistogramBins(samples, options = {}) {
   for (const sample of binned) counts[clampBinIndex(sample, minVal, binSize, numBins)]++;
 
   const sampleMean = calculateSampleMean(validSamples);
+  const belowCount = trim > 0 ? validSamples.length - binned.length - validSamples.filter((n) => n > maxVal).length : 0;
   return {
     bins: counts.map((count, i) => ({ start: minVal + i * binSize, end: minVal + (i + 1) * binSize, count })),
     maxCount: Math.max(...counts),
     meanBinIndex: clampBinIndex(sampleMean, minVal, binSize, numBins),
     sampleMean,
     sampleCount: binned.length,
+    validCount: validSamples.length,
+    belowCount,
     minVal,
     maxVal,
   };
@@ -1393,11 +1474,56 @@ function generateTextHistogram(samples, options = {}) {
   return output;
 }
 
+// Number (formatNumber output, optional exponent) + optional unit suffix | identifier | any other single char
+const STEP_TOKEN_RE = /(\d+(?:\.\d+)?(?:e[+-]\d+)?)([a-z]+)?|([a-z_]+)|(\S)/gi;
+
+function classifyStepToken(match) {
+  if (match[1] !== undefined) return { type: "number", text: match[0], value: match[1], unit: match[2] || "" };
+  if (match[3] !== undefined) return { type: match[3].toLowerCase() === "to" ? "keyword" : "unit", text: match[0] };
+  return { type: match[0] === "(" || match[0] === ")" ? "paren" : "operator", text: match[0] };
+}
+
+// Split a formatted step ("6480eur + 59.15 * 38eur") into display tokens
+function tokenizeStep(step) {
+  return Array.from(String(step ?? "").matchAll(STEP_TOKEN_RE), classifyStepToken);
+}
+
+function buildLcsTable(prev, next) {
+  const table = Array.from({ length: prev.length + 1 }, () => new Array(next.length + 1).fill(0));
+  for (let i = prev.length - 1; i >= 0; i--) {
+    for (let j = next.length - 1; j >= 0; j--) {
+      table[i][j] = prev[i].text === next[j].text ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+  return table;
+}
+
+// Flags each token of `next` that is not carried over from `prev` (token LCS), i.e. the values this step computed
+function diffStepTokens(prev, next) {
+  const table = buildLcsTable(prev, next);
+  const changed = new Array(next.length).fill(true);
+  let i = 0;
+  let j = 0;
+  while (i < prev.length && j < next.length) {
+    if (prev[i].text === next[j].text) {
+      changed[j] = false;
+      i++;
+      j++;
+    } else if (table[i + 1][j] >= table[i][j + 1]) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return changed;
+}
+
 const core = {
   DEFAULT_SAMPLES,
   DEFAULT_BINS,
   DEFAULT_WIDTH,
   DEFAULT_BAR,
+  DEFAULT_SEED,
   tokenize,
   shuntingYard,
   evalRpn,
@@ -1405,9 +1531,15 @@ const core = {
   evaluateExpressionWithSteps,
   evaluateCurrencyExpressionWithSteps,
   getQuantiles,
+  sortedValidSamples,
+  percentileOfSorted,
+  percentRankOfSorted,
+  niceTicks,
   formatNumber,
   generateTextHistogram,
   computeHistogramBins,
+  tokenizeStep,
+  diffStepTokens,
 };
 
 if (typeof module !== "undefined" && module.exports) {
