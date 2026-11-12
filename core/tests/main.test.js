@@ -14,6 +14,7 @@ const {
     percentileOfSorted,
     percentRankOfSorted,
     niceTicks,
+    densityCurve,
 } = require('../calc-core');
 
 test('Tokenizer keeps minus separate from number', () => {
@@ -321,4 +322,61 @@ test('niceTicks picks round steps inside the span', () => {
 test('niceTicks stays bounded at huge magnitudes', () => {
     const { ticks } = niceTicks(1e20, 1e20 + 1e5, 5);
     assert.ok(ticks.length <= 20);
+});
+
+function curveOver(expression) {
+    const sorted = sortedValidSamples(evaluateExpression(expression).samples);
+    const lo = percentileOfSorted(sorted, 1);
+    const hi = percentileOfSorted(sorted, 99);
+    return { lo, hi, density: densityCurve(sorted, lo, hi) };
+}
+
+function localMaxima(values) {
+    return values.filter((v, i) => i > 0 && i < values.length - 1 && v > values[i - 1] && v >= values[i + 1]).length;
+}
+
+test('densityCurve is one smooth peak holding the P1..P99 share of the samples', () => {
+    const { lo, hi, density } = curveOver('0~10');
+    const step = (hi - lo) / (density.length - 1);
+    const area = (density.reduce((sum, d) => sum + d, 0) - (density[0] + density[density.length - 1]) / 2) * step;
+    const peakAt = lo + density.indexOf(Math.max(...density)) * step;
+    assert.strictEqual(density.length, 200);
+    assert.ok(Math.abs(area - 0.98) < 0.01, `area ${area}`);
+    assert.ok(Math.abs(peakAt - 5) < 0.3, `peak at ${peakAt}`);
+    assert.strictEqual(localMaxima(density), 1);
+    assert.strictEqual(localMaxima(curveOver('7 ~ 10 * 17~23 * 1~10').density), 1);
+});
+
+test('densityCurve is deterministic for seeded samples', () => {
+    assert.deepStrictEqual(curveOver('(1~10) * (2~3)').density, curveOver('(1~10) * (2~3)').density);
+});
+
+test('densityCurve stays finite on heavy tails and empty without a window', () => {
+    const { density } = curveOver('1/(-1~1)');
+    assert.strictEqual(density.length, 200);
+    assert.ok(density.every(Number.isFinite));
+    assert.deepStrictEqual(densityCurve([5, 5, 5], 5, 5), []);
+    assert.deepStrictEqual(densityCurve([], 0, 1), []);
+});
+
+test('densityCurve caps the kernel at the window width', () => {
+    const sorted = sortedValidSamples([...Array(90).fill(1), 0, 2, 1e12]);
+    const density = densityCurve(sorted, 0, 2, 50);
+    assert.strictEqual(density.length, 50);
+    assert.ok(density.every((d) => Number.isFinite(d) && d >= 0));
+});
+
+test('A range that does not cross zero keeps the sign of its bounds', () => {
+    const positive = evaluateExpression('1~10').samples;
+    const negative = evaluateExpression('-10~-1').samples;
+    const crossing = evaluateExpression('-1~1').samples;
+    assert.ok(Math.min(...positive) >= 0);
+    assert.ok(Math.max(...negative) <= 0);
+    assert.ok(Math.min(...crossing) < 0 && Math.max(...crossing) > 0);
+});
+
+test('Currency ranges keep their sign through conversion', () => {
+    const { result } = evaluateExpressionWithSteps('7 ~ 10 * 17~23 * 1~10eur to pln');
+    assert.strictEqual(result.samples.length, 10000);
+    assert.ok(Math.min(...result.samples) >= 0);
 });

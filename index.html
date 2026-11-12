@@ -70,7 +70,8 @@
                 --line: rgba(191, 163, 111, 0.35);
                 --mark: #f6e2b8;
                 --band: #8a6420;
-                --tail: #c9a862;
+                --area: #c9a862;
+                --area-wash: rgba(201, 168, 98, 0.35);
                 --axis: rgba(58, 44, 19, 0.28);
                 --error: #b91c1c;
                 --sans: "Manrope", "Manrope Fallback", Arial, sans-serif;
@@ -126,10 +127,14 @@
                 gap: 0.75rem;
                 margin-bottom: 1.5rem;
             }
-            #expression {
+            .combo {
+                position: relative;
                 flex: 1 1 auto;
                 min-width: 0;
-                padding: 1.15rem 1.5rem;
+            }
+            #expression {
+                width: 100%;
+                padding: 1.15rem 3.25rem 1.15rem 1.5rem;
                 border: 2px solid var(--gold);
                 border-radius: 10px;
                 background: var(--cream);
@@ -146,6 +151,148 @@
                 outline: none;
                 border-color: var(--gold-light);
                 box-shadow: 0 0 0 2px #f2e6d9, 0 1.5px 6px 0 #e0b97333;
+            }
+            .history-toggle {
+                position: absolute;
+                top: 50%;
+                right: 0.75rem;
+                display: grid;
+                place-items: center;
+                width: 2.25rem;
+                height: 2.25rem;
+                border: 0;
+                border-radius: 8px;
+                background: none;
+                color: var(--label);
+                transform: translateY(-50%);
+                cursor: pointer;
+            }
+            .history-toggle[hidden] { display: none; }
+            .history-toggle:hover, .history-toggle[aria-expanded="true"] { background: var(--cream-dark); color: var(--ink); }
+            .history-popup {
+                position: absolute;
+                top: calc(100% + 0.4rem);
+                left: 0;
+                right: 0;
+                z-index: 20;
+                display: flex;
+                flex-direction: column;
+                max-height: min(24rem, 60vh);
+                border: 1px solid var(--line);
+                border-radius: 12px;
+                background: #fff;
+                box-shadow: 0 12px 32px rgba(58, 44, 19, 0.16), 0 2px 6px rgba(58, 44, 19, 0.08);
+                overflow: hidden;
+            }
+            .history-popup[hidden] { display: none; }
+            .history-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0.6rem 0.9rem 0.35rem;
+            }
+            .history-clear {
+                padding: 0.15rem 0.35rem;
+                border: 0;
+                border-radius: 6px;
+                background: none;
+                color: var(--unit);
+                font-family: var(--sans);
+                font-size: 0.75rem;
+                cursor: pointer;
+            }
+            .history-clear:hover { background: var(--cream); text-decoration: underline; }
+            .history-list {
+                margin: 0;
+                padding: 0 0.4rem 0.4rem;
+                overflow-y: auto;
+                overscroll-behavior: contain;
+                list-style: none;
+            }
+            .history-option {
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+                min-height: 2.5rem;
+                padding: 0.35rem 0.4rem 0.35rem 0.6rem;
+                border-radius: 8px;
+                color: var(--ink);
+                cursor: pointer;
+            }
+            .history-option.is-active { background: var(--cream-dark); }
+            .history-expr {
+                flex: 1 1 auto;
+                min-width: 0;
+                font-family: var(--mono);
+                font-size: 0.9rem;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .history-expr mark {
+                padding: 0 0.1em;
+                border-radius: 3px;
+                background: var(--mark);
+                color: inherit;
+            }
+            .history-time {
+                flex-shrink: 0;
+                font-family: var(--sans);
+                font-size: 0.75rem;
+                color: var(--label);
+                white-space: nowrap;
+            }
+            .history-remove {
+                display: grid;
+                flex-shrink: 0;
+                place-items: center;
+                width: 1.75rem;
+                height: 1.75rem;
+                border-radius: 6px;
+                color: var(--label);
+                visibility: hidden;
+            }
+            .history-option:hover .history-remove, .history-option.is-active .history-remove { visibility: visible; }
+            .history-remove:hover { background: rgba(58, 44, 19, 0.1); color: var(--ink); }
+            .history-keys {
+                margin: 0;
+                padding: 0.45rem 0.9rem;
+                border-top: 1px solid var(--line);
+                background: var(--cream);
+                font-family: var(--sans);
+                font-size: 0.7rem;
+                color: var(--label);
+            }
+            .history-keys kbd {
+                padding: 0 0.3em;
+                border: 1px solid var(--line);
+                border-radius: 4px;
+                background: #fff;
+                font-family: var(--sans);
+                font-size: 0.95em;
+            }
+            @media (hover: none) {
+                .history-remove { visibility: visible; }
+                .history-keys { display: none; }
+            }
+            @media (max-width: 520px) {
+                .history-keys { display: none; }
+                .history-option { align-items: flex-start; }
+                .history-expr {
+                    display: -webkit-box;
+                    font-size: 0.85rem;
+                    white-space: normal;
+                    overflow-wrap: anywhere;
+                    -webkit-box-orient: vertical;
+                    -webkit-line-clamp: 2;
+                }
+                .history-time { padding-top: 0.1rem; }
+            }
+            @media (prefers-reduced-motion: no-preference) {
+                .history-popup { animation: popup-in 0.14s ease-out; }
+                @keyframes popup-in {
+                    from { opacity: 0; transform: translateY(-4px); }
+                }
             }
             #calculateBtn {
                 flex: 0 0 50px;
@@ -331,38 +478,43 @@
                 position: relative;
                 height: 9rem;
                 padding-top: 1.5rem;
+                border-bottom: 1px solid var(--axis);
             }
-            .dist-band {
+            .dist-curve {
+                display: block;
+                width: 100%;
+                height: 100%;
+                overflow: visible;
+            }
+            .dist-area { fill: var(--area-wash); }
+            .dist-area.is-band { fill: var(--area); }
+            .dist-line {
+                fill: none;
+                stroke: var(--band);
+                stroke-width: 2px;
+                stroke-linejoin: round;
+                stroke-linecap: round;
+            }
+            .dist-cursor {
                 position: absolute;
                 top: 1.5rem;
                 bottom: 0;
-                background: rgba(138, 100, 32, 0.08);
+                z-index: 2;
+                width: 1px;
+                background: rgba(58, 44, 19, 0.4);
                 pointer-events: none;
             }
-            .dist-cols {
-                position: relative;
-                display: grid;
-                grid-template-columns: repeat(var(--bins), minmax(0, 1fr));
-                column-gap: 2px;
-                align-items: end;
-                height: 100%;
-                border-bottom: 1px solid var(--axis);
+            .dist-cursor-dot {
+                position: absolute;
+                bottom: var(--height, 0);
+                left: 50%;
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                background: var(--ink);
+                box-shadow: 0 0 0 2px var(--cream);
+                transform: translate(-50%, 50%);
             }
-            .dist-col {
-                position: relative;
-                display: flex;
-                align-items: flex-end;
-                justify-content: center;
-                height: 100%;
-            }
-            .dist-fill {
-                width: 100%;
-                max-width: 24px;
-                border-radius: 4px 4px 0 0;
-                background: var(--tail);
-            }
-            .dist-col.in-band .dist-fill { background: var(--band); }
-            .dist-col:hover .dist-fill { background: var(--ink); }
             .dist-tip, .dist-handle-tip {
                 position: absolute;
                 bottom: calc(100% + 0.35rem);
@@ -388,7 +540,7 @@
             .dist-tip-muted { color: var(--label); }
             .dist-tip.is-start, .dist-handle-tip.is-start { left: 0; transform: none; }
             .dist-tip.is-end, .dist-handle-tip.is-end { left: auto; right: 0; transform: none; }
-            .dist-col:hover .dist-tip { display: flex; }
+            .dist-cursor .dist-tip { display: flex; }
             .dist-handle-tip { font-weight: 700; }
 
             .dist-handle {
@@ -431,7 +583,6 @@
             .dist-handle:focus-visible .dist-handle-tip,
             .dist-handle.is-active .dist-handle-tip { display: flex; }
             .is-dragging { cursor: ew-resize; user-select: none; }
-            .is-dragging .dist-col:hover .dist-tip { display: none; }
             .dist-mean {
                 position: absolute;
                 top: 1.15rem;
@@ -497,11 +648,12 @@
                 color: var(--label);
             }
             .dist-legend { display: inline-flex; align-items: center; gap: 0.4em; }
-            .dist-key { width: 0.7rem; height: 0.7rem; border-radius: 3px; background: var(--band); }
+            .dist-key { width: 0.7rem; height: 0.7rem; border-radius: 3px; background: var(--area); box-shadow: inset 0 2px 0 var(--band); }
             .dist-key-mean { width: 2px; height: 0.85rem; border-radius: 0; background: var(--ink); }
             .dist-hint { color: var(--label); }
             .dist-hint::before { content: "\00b7"; margin: 0 0.4em 0 0.1em; }
             .dist-caption-note { margin-left: auto; }
+            .dist-caption-note > span { white-space: nowrap; }
             .dist-table {
                 margin-top: 0.4rem;
                 font-family: var(--sans);
@@ -623,10 +775,9 @@
                 @keyframes step-in {
                     from { opacity: 0; transform: translateY(4px); }
                 }
-                .dist.is-entering .dist-fill {
+                .dist.is-entering .dist-curve {
                     transform-origin: bottom;
                     animation: dist-grow 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-                    animation-delay: calc(var(--i, 0) * 12ms);
                 }
                 @keyframes dist-grow {
                     from { transform: scaleY(0); }
@@ -657,15 +808,32 @@
             <h1>unSure Calculator</h1>
 
             <div class="input-row">
-                <label for="expression" class="sr-only">Expression</label>
-                <input
-                    type="text"
-                    id="expression"
-                    placeholder="example: 7 ~ 10 * 17~23 * 1~10eur to pln"
-                    aria-describedby="hints"
-                    autocomplete="off"
-                    spellcheck="false"
-                />
+                <div class="combo">
+                    <label for="expression" class="sr-only">Expression</label>
+                    <input
+                        type="text"
+                        id="expression"
+                        placeholder="example: 7 ~ 10 * 17~23 * 1~10eur to pln"
+                        aria-describedby="hints"
+                        autocomplete="off"
+                        spellcheck="false"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded="false"
+                        aria-controls="history-list"
+                    />
+                    <button id="history-toggle" class="history-toggle" type="button" aria-label="Recent expressions" aria-controls="history-list" aria-expanded="false" tabindex="-1" hidden>
+                        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="7.25" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 6v4.2l2.8 1.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <div id="history-popup" class="history-popup" hidden>
+                        <div class="history-head">
+                            <span class="section-label">Recent</span>
+                            <button type="button" class="history-clear">Clear all</button>
+                        </div>
+                        <ul id="history-list" class="history-list" role="listbox" aria-label="Recent expressions"></ul>
+                        <p class="history-keys"><kbd>Up</kbd> <kbd>Down</kbd> move &middot; <kbd>Enter</kbd> run &middot; <kbd>Esc</kbd> close &middot; <kbd>Shift</kbd>+<kbd>Del</kbd> remove</p>
+                    </div>
+                </div>
                 <button id="calculateBtn" type="button" aria-label="Calculate">=</button>
             </div>
 

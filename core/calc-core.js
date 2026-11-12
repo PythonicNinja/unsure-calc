@@ -7,6 +7,7 @@ const DEFAULT_WIDTH = 40;
 const DEFAULT_BAR = "█";
 const DEFAULT_SEED = 42;
 const MAX_TICKS = 20;
+const RANGE_SPREAD = 3.28970725; // a~b puts a and b at P5 and P95, 2 * 1.6449 standard deviations apart
 const BASE_CURRENCY_TOKEN = "__base__";
 const DEFAULT_CURRENCY_RATES = {
   eur: { pln: 4.22 },
@@ -49,17 +50,38 @@ function gaussianRandom(mean, stdDev) {
   return mean + stdDev * (u * mul);
 }
 
-// Generate draws from N(mean, stdDev); fast path for zero-width ranges
-function generateSamples(mean, stdDev, sampleCount) {
+// One draw from N(mean, stdDev) that never crosses zero against `sign` (+1 keeps >= 0, -1 keeps <= 0, 0 keeps all).
+// The mean sits on the kept side, so at least half the draws pass and the loop stays short.
+function signedGaussian(mean, stdDev, sign) {
+  let value = gaussianRandom(mean, stdDev);
+  while (value * sign < 0) value = gaussianRandom(mean, stdDev);
+  return value;
+}
+
+// Generate draws from N(mean, stdDev), truncated at zero when `sign` is set; fast path for zero-width ranges
+function generateSamples(mean, stdDev, sampleCount, sign = 0) {
   if (!sampleCount || sampleCount <= 0) return [];
   if (stdDev === 0) {
     return Array(sampleCount).fill(mean);
   }
   const samples = [];
   for (let i = 0; i < sampleCount; i++) {
-    samples.push(gaussianRandom(mean, stdDev));
+    samples.push(signedGaussian(mean, stdDev, sign));
   }
   return samples;
+}
+
+// +1 when both bounds are >= 0, -1 when both are <= 0, 0 when the range crosses zero
+function rangeSign(a, b) {
+  if (a >= 0 && b >= 0) return 1;
+  if (a <= 0 && b <= 0) return -1;
+  return 0;
+}
+
+// Draws for a~b: a normal with a and b at P5 and P95. A range that does not cross zero never samples
+// across it, so 1~10 cannot turn a count or a price negative.
+function rangeSamples(a, b, sampleCount) {
+  return generateSamples((a + b) / 2, Math.abs(b - a) / RANGE_SPREAD, sampleCount, rangeSign(a, b));
 }
 
 // --- Tokenizer ---
@@ -242,15 +264,11 @@ function evalRpn(rpnQueue, sampleCount = DEFAULT_SAMPLES) {
       const a = uvA.mean;
       const b = uvB.mean;
 
-      const mean = (a + b) / 2.0;
-      const stdDev = Math.abs(b - a) / 3.28970725;
-      const samples = generateSamples(mean, stdDev, sampleCount);
-
       stack.push({
-        mean: mean,
+        mean: (a + b) / 2,
         min: Math.min(a, b),
         max: Math.max(a, b),
-        samples: samples,
+        samples: rangeSamples(a, b, sampleCount),
       });
     } else if ("+-*/^".includes(token)) {
       if (stack.length < 2) throw new Error(`Not enough operands for '${token}'`);
@@ -877,15 +895,7 @@ function evaluateCurrencyBinaryWithUncertainty(operator, left, right, rates, sam
     }
     const a = left.mean;
     const b = right.mean;
-    const mean = (a + b) / 2;
-    const stdDev = Math.abs(b - a) / 3.28970725;
-    return createCurrencyValue(
-      "scalar",
-      mean,
-      Math.min(a, b),
-      Math.max(a, b),
-      generateSamples(mean, stdDev, sampleCount),
-    );
+    return createCurrencyValue("scalar", (a + b) / 2, Math.min(a, b), Math.max(a, b), rangeSamples(a, b, sampleCount));
   }
 
   if (operator === "+" || operator === "-") {
@@ -1450,6 +1460,64 @@ function computeHistogramBins(samples, options = {}) {
   };
 }
 
+const DENSITY_POINTS = 200;
+const KERNEL_REACH = 4; // kernel cut-off in bandwidths; past it the weight is below any visible height
+const MIN_BANDWIDTH_STEPS = 3; // heavy tails stretch the window, so never smooth over fewer grid steps
+
+// Sample standard deviation (n - 1); 0 for fewer than two values
+function sampleStdDev(values) {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((acc, val) => acc + val, 0) / values.length;
+  const squares = values.reduce((acc, val) => acc + (val - mean) ** 2, 0);
+  return Math.sqrt(squares / (values.length - 1));
+}
+
+// Silverman's rule of thumb; the IQR term keeps heavy tails from widening the kernel
+function silvermanBandwidth(sorted) {
+  const sd = sampleStdDev(sorted);
+  const iqr = quantileOfSorted(sorted, 0.75) - quantileOfSorted(sorted, 0.25);
+  return 0.9 * (Math.min(sd, iqr / 1.34) || sd) * sorted.length ** -0.2;
+}
+
+// Linear binning: each sample splits its weight between the two nearest grid points
+function binOntoGrid(values, origin, step, size) {
+  const weights = new Float64Array(size);
+  for (const value of values) {
+    const position = (value - origin) / step;
+    if (!(position >= 0 && position <= size - 1)) continue;
+    const index = Math.floor(position);
+    const fraction = position - index;
+    weights[index] += 1 - fraction;
+    if (fraction > 0) weights[index + 1] += fraction;
+  }
+  return weights;
+}
+
+function gaussianKernel(reach, step, bandwidth) {
+  return Array.from({ length: 2 * reach + 1 }, (_, k) => Math.exp(-0.5 * (((k - reach) * step) / bandwidth) ** 2));
+}
+
+function convolveAt(weights, kernel, start) {
+  let sum = 0;
+  for (let k = 0; k < kernel.length; k++) sum += weights[start + k] * kernel[k];
+  return sum;
+}
+
+// Smoothed density of the samples at `points` even steps over [minVal, maxVal]: a Gaussian kernel density
+// estimate, binned so it costs O(n + points * kernel) instead of O(n * points). Samples just outside the
+// window still shape its edges. Empty when the window has no width.
+function densityCurve(sorted, minVal, maxVal, points = DENSITY_POINTS) {
+  const span = maxVal - minVal;
+  if (!(span > 0) || !(points > 1) || !Array.isArray(sorted) || sorted.length === 0) return [];
+  const step = span / (points - 1);
+  const bandwidth = Math.min(span, Math.max(silvermanBandwidth(sorted), MIN_BANDWIDTH_STEPS * step));
+  const reach = Math.ceil((KERNEL_REACH * bandwidth) / step);
+  const weights = binOntoGrid(sorted, minVal - reach * step, step, points + 2 * reach);
+  const kernel = gaussianKernel(reach, step, bandwidth);
+  const scale = sorted.length * bandwidth * Math.sqrt(2 * Math.PI);
+  return Array.from({ length: points }, (_, j) => convolveAt(weights, kernel, j) / scale);
+}
+
 // Build text lines for a simple histogram of sample distribution
 function generateTextHistogram(samples, options = {}) {
   const maxBarWidth = options.width ?? DEFAULT_WIDTH;
@@ -1538,6 +1606,7 @@ const core = {
   formatNumber,
   generateTextHistogram,
   computeHistogramBins,
+  densityCurve,
   tokenizeStep,
   diffStepTokens,
 };

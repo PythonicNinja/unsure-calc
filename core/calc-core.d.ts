@@ -70,6 +70,7 @@ export function computeHistogramBins(
   samples: number[] | null,
   options?: { bins?: number; trim?: number },
 ): Histogram | null;
+export function densityCurve(sorted: number[], minVal: number, maxVal: number, points?: number): number[];
 
 export type StepToken =
   | { type: "number"; text: string; value: string; unit: string }

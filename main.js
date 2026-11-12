@@ -14,6 +14,7 @@ const {
     evaluateExpressionWithSteps,
     formatNumber,
     computeHistogramBins,
+    densityCurve,
     tokenizeStep,
     diffStepTokens,
     sortedValidSamples,
@@ -405,7 +406,8 @@ function emptyView(summaryHtml, hasError = false) {
 const EMPTY_VIEW = emptyView(noteHtml("Enter an expression to calculate."));
 
 const HISTOGRAM_TRIM = 0.01; // the chart spans P1..P99 so a few outliers do not flatten the shape
-const HISTOGRAM_BINS = 32;
+const HISTOGRAM_BINS = 32; // rows of the table twin
+const CURVE_WIDTH = 1000; // SVG units across the plot; heights run 0..100 from the peak down
 const AXIS_TICKS = 5;
 const COMPACT_UNITS = [[1e12, "T"], [1e9, "B"], [1e6, "M"]];
 const MIN_BAND_GAP = 1; // percentiles between the two band edges
@@ -455,20 +457,29 @@ function cumulativeShares(histogram) {
     });
 }
 
-function columnTipHtml(bin, index, chart) {
-    const { histogram, cumulative, unit } = chart;
-    const align = edgeClass((index / histogram.bins.length) * 100, 20);
-    return `<span class="dist-tip${align}"><strong>${shareText(bin.count / histogram.validCount)}</strong>` +
-        `<span>${plainRange(bin.start, bin.end, unit)}</span>` +
-        `<span class="dist-tip-muted">${shareText(cumulative[index])} at or below ${plainAmount(bin.end, unit)}</span></span>`;
+// Density -> heights as a share of the tallest point (0..1); empty when there is nothing to draw
+function curveShape(density) {
+    const peak = Math.max(0, ...density);
+    return peak > 0 ? density.map((value) => value / peak) : [];
 }
 
-function columnHtml(bin, index, chart) {
-    const ratio = (bin.count / chart.histogram.maxCount) * 100;
-    const height = bin.count ? `max(2px, ${ratio.toFixed(2)}%)` : "0";
-    return `<span class="dist-col" style="--i:${index}"><span class="dist-fill" style="height:${height}"></span>` +
-        `${columnTipHtml(bin, index, chart)}</span>`;
+function curvePoints(shape) {
+    const last = shape.length - 1;
+    return shape.map((height, i) => `${((i / last) * CURVE_WIDTH).toFixed(1)} ${(100 - height * 100).toFixed(2)}`);
 }
+
+// The area is drawn twice: tails, then the band clipped to its edges by paintBand(); the outline goes on top
+function curveSvgHtml(shape, label) {
+    const line = `M${curvePoints(shape).join("L")}`;
+    const area = `${line}L${CURVE_WIDTH} 100L0 100Z`;
+    return `<svg class="dist-curve" viewBox="0 0 ${CURVE_WIDTH} 100" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(label)}">` +
+        `<clipPath id="dist-band-clip"><rect class="dist-band-rect" x="0" y="0" width="0" height="100"/></clipPath>` +
+        `<path class="dist-area" d="${area}"/><path class="dist-area is-band" d="${area}" clip-path="url(#dist-band-clip)"/>` +
+        `<path class="dist-line" d="${line}" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+const CURSOR_HTML = '<span class="dist-cursor" hidden><span class="dist-cursor-dot"></span>' +
+    '<span class="dist-tip"><strong></strong><span class="dist-tip-muted"></span></span></span>';
 
 function meanMarkerHtml(chart) {
     const { histogram, unit } = chart;
@@ -509,7 +520,8 @@ function captionHtml(chart) {
         `<span class="dist-legend"><span class="dist-key" aria-hidden="true"></span><span class="dist-band-label"></span>` +
         `<span class="dist-hint">drag the edges to adjust</span></span>` +
         `<span class="dist-legend"><span class="dist-key dist-key-mean" aria-hidden="true"></span>mean</span>` +
-        `<span class="dist-caption-note">${samples} samples · seed ${DEFAULT_SEED} · P1-P99 shown</span></figcaption>`;
+        `<span class="dist-caption-note"><span>smoothed from ${samples} samples</span> · <span>seed ${DEFAULT_SEED}</span> · ` +
+        `<span>P1-P99 shown</span></span></figcaption>`;
 }
 
 // Table twin of the chart: every value the tooltips show, reachable without hovering
@@ -525,19 +537,17 @@ function tableHtml(chart) {
 
 function chartLabel(chart) {
     const { histogram, unit } = chart;
-    return `Distribution of ${histogram.validCount} simulated outcomes, mean ${plainAmount(histogram.sampleMean, unit)}.`;
+    return `Smoothed distribution of ${histogram.validCount} simulated outcomes, mean ${plainAmount(histogram.sampleMean, unit)}.`;
 }
 
-// Column histogram on a value axis: mean line, round ticks, per-column tooltips, table twin.
+// Smoothed density on a value axis: mean line, round ticks, crosshair readout, table twin.
 // Band-neutral on purpose; paintBand() adds the band so dragging it never rebuilds the chart.
-function buildHistogramHtml(simulation, animate) {
-    const { histogram, unit } = simulation;
-    if (!histogram || histogram.maxCount === 0 || !(histogram.maxVal > histogram.minVal)) return "";
+function buildDistributionHtml(simulation, animate) {
+    const { histogram, shape, unit } = simulation;
+    if (!histogram || shape.length === 0) return "";
     const chart = { histogram, unit, cumulative: cumulativeShares(histogram) };
-    const columns = histogram.bins.map((bin, i) => columnHtml(bin, i, chart));
-    return `<figure class="dist${enteringClass(animate)}"><div class="dist-plot"><span class="dist-band"></span>` +
-        `<div class="dist-cols" role="img" aria-label="${escapeHtml(chartLabel(chart))}" style="--bins:${histogram.bins.length}">` +
-        `${columns.join("")}</div>${meanMarkerHtml(chart)}${handleHtml("low", "Lower percentile")}${handleHtml("high", "Upper percentile")}</div>` +
+    return `<figure class="dist${enteringClass(animate)}"><div class="dist-plot">${curveSvgHtml(shape, chartLabel(chart))}` +
+        `${meanMarkerHtml(chart)}${CURSOR_HTML}${handleHtml("low", "Lower percentile")}${handleHtml("high", "Upper percentile")}</div>` +
         `${axisHtml(histogram)}${captionHtml(chart)}${tableHtml(chart)}</figure>`;
 }
 
@@ -556,21 +566,54 @@ function paintHandle(handle, edge, resolved, simulation) {
     handle.firstElementChild.className = `dist-handle-tip${edgeClass(position, 12)}`;
 }
 
-// Paints the band onto the rendered chart in place (wash, column and table emphasis, handles, legend)
+// Paints the band onto the rendered chart in place (area clip, table emphasis, handles, legend)
 function paintBand(container, resolved, simulation) {
     const figure = container.querySelector(".dist");
     if (!figure) return;
     const { bins } = simulation.histogram;
     const left = positionPercent(resolved.lowValue, simulation.histogram);
     const right = positionPercent(resolved.highValue, simulation.histogram);
-    const wash = figure.querySelector(".dist-band");
-    wash.style.left = `${left.toFixed(2)}%`;
-    wash.style.width = `${(right - left).toFixed(2)}%`;
-    figure.querySelectorAll(".dist-col").forEach((col, i) => col.classList.toggle("in-band", binInBand(bins[i], resolved)));
+    const clip = figure.querySelector(".dist-band-rect");
+    clip.setAttribute("x", ((left / 100) * CURVE_WIDTH).toFixed(1));
+    clip.setAttribute("width", (((right - left) / 100) * CURVE_WIDTH).toFixed(1));
     figure.querySelectorAll(".dist-table tbody tr").forEach((row, i) => row.classList.toggle("in-band", binInBand(bins[i], resolved)));
     paintHandle(figure.querySelector(".dist-handle.is-low"), "low", resolved, simulation);
     paintHandle(figure.querySelector(".dist-handle.is-high"), "high", resolved, simulation);
     figure.querySelector(".dist-band-label").textContent = `${resolved.coverage} likely range`;
+}
+
+// The crosshair snaps to the nearest curve point: hairline, a dot on the curve, the value and the share at or below it
+function paintCursor(cursor, fraction, simulation) {
+    const { histogram, shape, sorted, unit } = simulation;
+    const last = shape.length - 1;
+    const index = Math.round(fraction * last);
+    const position = (index / last) * 100;
+    const value = histogram.minVal + (index / last) * (histogram.maxVal - histogram.minVal);
+    const tip = cursor.lastElementChild;
+    cursor.hidden = false;
+    cursor.style.left = `${position.toFixed(2)}%`;
+    cursor.style.setProperty("--height", `${(shape[index] * 100).toFixed(2)}%`);
+    tip.className = `dist-tip${edgeClass(position, 15)}`;
+    tip.firstElementChild.textContent = plainAmount(value, unit);
+    tip.lastElementChild.textContent = `${shareText(percentRankOfSorted(sorted, value) / 100)} at or below`;
+}
+
+// Mouse only: touch has no hover, and over a handle the handle's own tip shows instead
+function cursorPlot(event) {
+    if (event.pointerType !== "mouse" || event.target.closest(".dist-handle")) return null;
+    return event.target.closest(".dist-plot");
+}
+
+// Crosshair at a pointer x, or hidden when there is none
+function paintCursorAt(container, clientX, simulation) {
+    const cursor = container.querySelector(".dist-cursor");
+    if (!cursor) return;
+    if (clientX === null || !simulation) {
+        cursor.hidden = true;
+        return;
+    }
+    const rect = container.querySelector(".dist-curve").getBoundingClientRect();
+    paintCursor(cursor, Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)), simulation);
 }
 
 function formatAmount(value, unit) {
@@ -601,7 +644,8 @@ function hasNaN(...values) {
 function buildSimulation(samples, unit, stats) {
     const sorted = sortedValidSamples(samples);
     const histogram = computeHistogramBins(sorted, { bins: HISTOGRAM_BINS, trim: HISTOGRAM_TRIM });
-    return { sorted, histogram, unit, stats };
+    const shape = histogram ? curveShape(densityCurve(sorted, histogram.minVal, histogram.maxVal)) : [];
+    return { sorted, histogram, shape, unit, stats };
 }
 
 function resolveBand(simulation, band) {
@@ -627,7 +671,7 @@ function buildSimulatedView(samples, unit, stats, stepsHtml, display) {
         return { ...emptyView(errorHtml("Simulated result contains NaN/Infinity"), true), stepsHtml };
     }
     const summaryHtml = simulatedSummaryHtml(simulation, resolveBand(simulation, display.band));
-    const histogramHtml = buildHistogramHtml(simulation, display.animate);
+    const histogramHtml = buildDistributionHtml(simulation, display.animate);
     return { summaryHtml, histogramHtml, stepsHtml, hasError: false, simulation };
 }
 
@@ -798,6 +842,99 @@ function rememberDetailsToggle(event) {
     if (key in openDetails) openDetails[key] = event.target.open;
 }
 
+const HISTORY_KEY = "unsureCalcHistory.v1";
+const HISTORY_LIMIT = 30;
+
+function isHistoryEntry(entry) {
+    return typeof entry?.expr === "string" && entry.expr !== "" && Number.isFinite(entry.at);
+}
+
+// Newest first; [] when storage is blocked, empty or malformed
+function readHistory() {
+    try {
+        const parsed = JSON.parse(window.localStorage.getItem(HISTORY_KEY) || "[]");
+        return Array.isArray(parsed) ? parsed.filter(isHistoryEntry).slice(0, HISTORY_LIMIT) : [];
+    } catch (error) {
+        console.warn("Unable to read history", error);
+        return [];
+    }
+}
+
+function writeHistory(entries) {
+    try {
+        window.localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+    } catch (error) {
+        console.warn("Unable to save history", error);
+    }
+}
+
+// One entry per expression: a repeat moves to the top with the new time
+function addToHistory(entries, expr, at) {
+    return [{ expr, at }, ...entries.filter((entry) => entry.expr !== expr)].slice(0, HISTORY_LIMIT);
+}
+
+function removeFromHistory(entries, expr) {
+    return entries.filter((entry) => entry.expr !== expr);
+}
+
+// Case-insensitive substring match; an empty query keeps everything
+function matchHistory(entries, query) {
+    const needle = query.trim().toLowerCase();
+    return needle ? entries.filter((entry) => entry.expr.toLowerCase().includes(needle)) : entries;
+}
+
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+function relativeTime(at, now) {
+    const age = now - at;
+    if (age < MINUTE_MS) return "just now";
+    if (age < HOUR_MS) return `${Math.floor(age / MINUTE_MS)} min ago`;
+    if (age < DAY_MS) return `${Math.floor(age / HOUR_MS)} h ago`;
+    if (age < 2 * DAY_MS) return "yesterday";
+    return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// Escaped text with the first match of `query` wrapped in <mark>
+function highlightHtml(text, query) {
+    const needle = query.trim().toLowerCase();
+    const start = needle ? text.toLowerCase().indexOf(needle) : -1;
+    if (start < 0) return escapeHtml(text);
+    const end = start + needle.length;
+    return `${escapeHtml(text.slice(0, start))}<mark>${escapeHtml(text.slice(start, end))}</mark>${escapeHtml(text.slice(end))}`;
+}
+
+const REMOVE_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+    '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+
+function historyOptionId(index) {
+    return `history-opt-${index}`;
+}
+
+function historyOptionHtml(entry, index, query, activeIndex, now) {
+    const active = index === activeIndex;
+    return `<li role="option" id="${historyOptionId(index)}" class="history-option${active ? " is-active" : ""}" ` +
+        `aria-selected="${active}" data-index="${index}">` +
+        `<span class="history-expr">${highlightHtml(entry.expr, query)}</span>` +
+        `<time class="history-time" datetime="${new Date(entry.at).toISOString()}">${relativeTime(entry.at, now)}</time>` +
+        `<span class="history-remove" data-remove="${index}" title="Remove from history">${REMOVE_ICON}</span></li>`;
+}
+
+// Arrow-key move through `count` options, wrapping at both ends; -1 means none is active
+function stepIndex(active, delta, count) {
+    if (count === 0) return -1;
+    if (active < 0) return delta > 0 ? 0 : count - 1;
+    return (active + delta + count) % count;
+}
+
+function getHistoryCombo() {
+    const popup = document.getElementById("history-popup");
+    const list = document.getElementById("history-list");
+    const toggle = document.getElementById("history-toggle");
+    return popup && list && toggle ? { popup, list, toggle } : null;
+}
+
 function setupBrowserHandlers() {
     const expressionInput = document.getElementById("expression");
     const calculateBtn = document.getElementById("calculateBtn");
@@ -818,6 +955,14 @@ function setupBrowserHandlers() {
     let drag = null;
     let pendingBand = null;
     let frame = 0;
+    let cursorX = null;
+    let cursorFrame = 0;
+    const combo = getHistoryCombo();
+    let history = readHistory();
+    let comboOpen = false;
+    let comboQuery = "";
+    let comboActive = -1;
+    let comboMatches = [];
     if (bandControls) syncBandControls(bandControls, band);
 
     const expr = getQueryParam("expr");
@@ -850,7 +995,7 @@ function setupBrowserHandlers() {
     // Sampling is seeded, so a re-render with the same rates yields the same markup and setHtml skips it
     function renderEvaluation(expression, evaluationOptions, { skipIfError = false, animate = false } = {}) {
         const view = evaluateView(expression, evaluationOptions, { band, animate });
-        if (skipIfError && view.hasError) return;
+        if (skipIfError && view.hasError) return null;
         lastSimulation = view.simulation;
         if (bandControls) bandControls.row.classList.toggle("hidden", !view.simulation);
         setHtml(resultSummaryDisplay, view.summaryHtml);
@@ -859,6 +1004,141 @@ function setupBrowserHandlers() {
         if (view.simulation) paintBand(resultHistogramDisplay, resolveBand(view.simulation, band), view.simulation);
         resultContainer.classList.toggle("has-error", view.hasError);
         resultContainer.classList.remove("hidden");
+        return view;
+    }
+
+    // Only expressions that evaluated cleanly are kept
+    function rememberExpression(expression, view) {
+        const expr = expression.trim();
+        if (!expr || !view || view.hasError) return;
+        saveHistory(addToHistory(history, expr, Date.now()));
+    }
+
+    function saveHistory(entries) {
+        history = entries;
+        writeHistory(history);
+        renderCombo();
+    }
+
+    // History dropdown: an ARIA 1.2 combobox on the expression input, filtered by what is typed
+    function renderCombo() {
+        if (!combo) return;
+        comboMatches = matchHistory(history, comboQuery);
+        comboActive = Math.min(comboActive, comboMatches.length - 1);
+        const visible = comboOpen && comboMatches.length > 0;
+        combo.toggle.hidden = history.length === 0;
+        combo.toggle.setAttribute("aria-expanded", String(visible));
+        combo.popup.hidden = !visible;
+        expressionInput.setAttribute("aria-expanded", String(visible));
+        if (comboActive >= 0) expressionInput.setAttribute("aria-activedescendant", historyOptionId(comboActive));
+        else expressionInput.removeAttribute("aria-activedescendant");
+        if (!visible) return;
+        const now = Date.now();
+        setHtml(combo.list, comboMatches.map((entry, i) => historyOptionHtml(entry, i, comboQuery, comboActive, now)).join(""));
+        combo.list.querySelector(".is-active")?.scrollIntoView({ block: "nearest" });
+    }
+
+    function openCombo(query = "") {
+        comboOpen = true;
+        comboQuery = query;
+        comboActive = -1;
+        renderCombo();
+    }
+
+    function closeCombo() {
+        if (!comboOpen) return;
+        comboOpen = false;
+        comboActive = -1;
+        renderCombo();
+    }
+
+    function pickHistory(index, { blur = false } = {}) {
+        const entry = comboMatches[index];
+        if (!entry) return;
+        expressionInput.value = entry.expr;
+        closeCombo();
+        if (blur) expressionInput.blur();
+        calculate({ animate: true });
+    }
+
+    function removeHistory(index) {
+        const entry = comboMatches[index];
+        if (entry) saveHistory(removeFromHistory(history, entry.expr));
+    }
+
+    function moveActive(delta) {
+        if (!comboOpen) {
+            openCombo();
+            comboActive = stepIndex(-1, delta, comboMatches.length);
+        } else {
+            comboActive = stepIndex(comboActive, delta, comboMatches.length);
+        }
+        renderCombo();
+    }
+
+    // Keys the combobox owns; everything else (including Enter with no option active) reaches the input
+    function handleComboKey(event) {
+        const active = comboOpen && comboActive >= 0;
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            if (history.length === 0) return;
+            event.preventDefault();
+            moveActive(event.key === "ArrowDown" ? 1 : -1);
+        } else if (event.key === "Enter" && active) {
+            event.preventDefault();
+            pickHistory(comboActive);
+        } else if (event.key === "Escape" && comboOpen) {
+            event.preventDefault();
+            closeCombo();
+        } else if (event.key === "Delete" && event.shiftKey && active) {
+            event.preventDefault();
+            removeHistory(comboActive);
+        } else if (event.key === "Enter" || event.key === "Tab") {
+            closeCombo();
+        }
+    }
+
+    // A mousedown inside the popup must not blur the input, or the popup closes before the click lands
+    function keepInputFocus(event) {
+        event.preventDefault();
+    }
+
+    function handleComboClick(event) {
+        if (event.target.closest(".history-clear")) {
+            saveHistory([]);
+            closeCombo();
+            return;
+        }
+        const remove = event.target.closest(".history-remove");
+        if (remove) {
+            removeHistory(Number(remove.dataset.remove));
+            return;
+        }
+        const option = event.target.closest(".history-option");
+        if (option) pickHistory(Number(option.dataset.index), { blur: true });
+    }
+
+    function handleComboHover(event) {
+        const option = event.target.closest(".history-option");
+        const index = option ? Number(option.dataset.index) : -1;
+        if (index === comboActive || index < 0) return;
+        comboActive = index;
+        renderCombo();
+    }
+
+    function toggleCombo() {
+        if (comboOpen) {
+            closeCombo();
+            return;
+        }
+        expressionInput.focus();
+        openCombo();
+    }
+
+    // Another tab saved or cleared history
+    function syncHistoryFromStorage(event) {
+        if (event.key !== HISTORY_KEY && event.key !== null) return;
+        history = readHistory();
+        renderCombo();
     }
 
     // A band change repaints from the last simulation: no re-evaluation, no pushState, no chart rebuild
@@ -882,6 +1162,17 @@ function setupBrowserHandlers() {
         });
     }
 
+    // The crosshair repaints at most once per frame and stays hidden while a band edge is dragged
+    function scheduleCursor(event) {
+        cursorX = !drag && cursorPlot(event) ? event.clientX : null;
+        if (!cursorFrame) cursorFrame = requestAnimationFrame(flushCursor);
+    }
+
+    function flushCursor() {
+        cursorFrame = 0;
+        paintCursorAt(resultHistogramDisplay, cursorX, lastSimulation);
+    }
+
     function handleBandPreset(event) {
         const preset = event.target.closest(".band-preset");
         if (preset) applyBand(presetBand(Number(preset.dataset.coverage)));
@@ -900,7 +1191,7 @@ function setupBrowserHandlers() {
             handle,
             startX: event.clientX,
             ambiguous: handlesOverlap(plot),
-            rect: plot.querySelector(".dist-cols").getBoundingClientRect(),
+            rect: plot.querySelector(".dist-curve").getBoundingClientRect(),
         };
         handle.classList.add("is-active");
         resultHistogramDisplay.classList.add("is-dragging");
@@ -947,7 +1238,8 @@ function setupBrowserHandlers() {
         if (expression) pushExpressionToUrl(expression);
 
         if (!isCurrencyLikeExpression(expression)) {
-            renderEvaluation(expression, {}, { animate });
+            const view = renderEvaluation(expression, {}, { animate });
+            rememberExpression(expression, view);
             return;
         }
 
@@ -956,7 +1248,8 @@ function setupBrowserHandlers() {
         renderEvaluation(expression, buildCurrencyRateOptions(getProvisionalFxRates()), { skipIfError: true, animate });
         const state = await loadDailyFxRateState();
         renderRateStatusWithRefetch(state);
-        renderEvaluation(expression, buildCurrencyRateOptions(state.rates), { animate });
+        const view = renderEvaluation(expression, buildCurrencyRateOptions(state.rates), { animate });
+        rememberExpression(expression, view);
     }
 
     calculateBtn.addEventListener("click", () => calculate({ animate: true }));
@@ -964,6 +1257,8 @@ function setupBrowserHandlers() {
     resultContainer.addEventListener("toggle", rememberDetailsToggle, true);
     resultHistogramDisplay.addEventListener("pointerdown", startHandleDrag);
     resultHistogramDisplay.addEventListener("pointermove", moveHandleDrag);
+    resultHistogramDisplay.addEventListener("pointermove", scheduleCursor);
+    resultHistogramDisplay.addEventListener("pointerleave", scheduleCursor);
     resultHistogramDisplay.addEventListener("pointerup", endHandleDrag);
     resultHistogramDisplay.addEventListener("pointercancel", endHandleDrag);
     resultHistogramDisplay.addEventListener("lostpointercapture", endHandleDrag);
@@ -972,6 +1267,20 @@ function setupBrowserHandlers() {
     expressionInput.addEventListener("keypress", (event) => {
         if (event.key === "Enter") calculate({ animate: true });
     });
+    expressionInput.addEventListener("keydown", handleComboKey);
+    expressionInput.addEventListener("focus", () => openCombo());
+    expressionInput.addEventListener("click", () => { if (!comboOpen) openCombo(); });
+    expressionInput.addEventListener("input", () => openCombo(expressionInput.value));
+    expressionInput.addEventListener("blur", closeCombo);
+    if (combo) {
+        combo.popup.addEventListener("mousedown", keepInputFocus);
+        combo.popup.addEventListener("click", handleComboClick);
+        combo.popup.addEventListener("pointermove", handleComboHover);
+        combo.toggle.addEventListener("mousedown", keepInputFocus);
+        combo.toggle.addEventListener("click", toggleCombo);
+    }
+    window.addEventListener("storage", syncHistoryFromStorage);
+    renderCombo();
     document.querySelector('h1')?.addEventListener('click', reset);
 
     if (!expressionInput.value) {

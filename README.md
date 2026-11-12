@@ -16,8 +16,11 @@ Notes:
 - Supported symbols in daily feed: `EUR, USD, GBP, JPY, CHF, CAD, AUD, NZD, SEK, NOK, DKK, PLN, CZK, HUF, RON, TRY, CNY, HKD, SGD, KRW, INR, MXN, BRL, ZAR, AED`.
 - If live fetch fails, the app falls back to a local EUR/PLN snapshot (`4.22`).
 - Rates can still be overridden programmatically with `evaluateExpressionWithSteps(..., { currencyRates })`.
+- `a~b` is sampled as a normal distribution with `a` and `b` at its P5 and P95. A range that does not cross zero never samples across it, so `1~10` stays non-negative.
 - Sampling uses a fixed seed (42), so the same expression always gives the same simulated numbers.
 - The likely range defaults to P5-P95. Pick another with the presets or by dragging the band edges on the histogram (arrow keys work on a focused edge); it is kept in the URL as `?p=10-90`.
+- The web app keeps the last 30 expressions it calculated (typed or opened from a link) in localStorage. Focus the input (or click the clock icon) for a dropdown of them, filtered as you type; Up/Down and Enter rerun one, Shift+Delete or the x removes one. Nothing leaves the browser.
+- The web chart draws the samples as a smoothed density curve (Gaussian kernel, Silverman bandwidth). Hover it for the share of outcomes at or below a value; "Show as table" lists the binned counts.
 
 Deployed at: https://calc.pythonic.ninja
 
